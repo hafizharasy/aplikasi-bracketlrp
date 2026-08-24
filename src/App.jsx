@@ -129,6 +129,21 @@ function createInitialData() {
   };
 }
 
+// Heals data saved by earlier versions of this app that didn't have roomNo/schools yet,
+// so an old Supabase record still displays and behaves correctly after this update.
+function normalizeData(raw) {
+  if (!raw || !Array.isArray(raw.rooms)) return raw;
+  const sessionCounts = {};
+  const rooms = raw.rooms.map(room => {
+    const session = room.session || 1;
+    sessionCounts[session] = (sessionCounts[session] || 0) + 1;
+    const roomNo = sessionCounts[session];
+    return { ...room, session, roomNo, schools: room.schools || {}, name: `Ruangan ${roomNo}` };
+  });
+  const finalStage = raw.finalStage && Array.isArray(raw.finalStage.matches) ? raw.finalStage : { matches: [] };
+  return { ...raw, rooms, finalStage };
+}
+
 function getRoomChampion(room) {
   const last = room.rounds[room.rounds.length - 1];
   return (last && last[0] && last[0].winner) || null;
@@ -607,6 +622,16 @@ function GlobalStyle() {
       .btn-ghost:hover { border-color: #C28E12; }
       .btn-crimson { background: #D6293F; color: #FFFFFF; }
       .btn-crimson:hover { background: #B31F32; }
+      .session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; max-width: 640px; margin: 0 auto; width: 100%; }
+      .session-card {
+        display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+        background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 18px; padding: 26px 16px;
+        cursor: pointer; font-family: inherit; transition: transform .15s, border-color .15s, box-shadow .15s;
+      }
+      .session-card:hover { transform: translateY(-3px); border-color: #C28E12; box-shadow: 0 10px 26px rgba(194,142,18,0.16); }
+      .session-card-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #A69C89; font-weight: 700; }
+      .session-card-number { font-family: 'Bungee', cursive; font-size: 40px; color: #C28E12; line-height: 1.1; }
+      .session-card-sub { font-size: 11px; color: #8D8371; margin-top: 4px; }
       .room-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
       .room-card {
         text-align: left; background: #FFFFFF; border: 1px solid #E9DCC0;
@@ -809,6 +834,7 @@ export default function App() {
 
   const [view, setView] = useState('landing');
   const [activeRoomId, setActiveRoomId] = useState(null);
+  const [activeSession, setActiveSession] = useState(null);
 
   const [role, setRole] = useState('public'); // 'public' | 'pengawas' | 'admin'
   const [pengawasRoomId, setPengawasRoomId] = useState(null);
@@ -843,8 +869,12 @@ export default function App() {
       }
       if (!alive) return;
       if (loaded) {
-        setData(loaded);
+        const normalized = normalizeData(loaded);
+        setData(normalized);
         setLoading(false);
+        if (JSON.stringify(normalized) !== JSON.stringify(loaded)) {
+          try { await supabase.from('tournament_state').update({ data: normalized, updated_at: new Date().toISOString() }).eq('id', 1); } catch (e) {}
+        }
       } else {
         const initial = createInitialData();
         setData(initial);
@@ -858,7 +888,7 @@ export default function App() {
   // Lock pengawas to their own room: if they ever land on the dashboard (all-rooms list),
   // bounce them straight back to their assigned room. Admin and public are unaffected.
   useEffect(() => {
-    if (role === 'pengawas' && view === 'dashboard') {
+    if (role === 'pengawas' && (view === 'dashboard' || view === 'session')) {
       setView('room');
       setActiveRoomId(pengawasRoomId);
     }
@@ -869,7 +899,7 @@ export default function App() {
     const channel = supabase
       .channel('tournament_state_changes')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'tournament_state', filter: 'id=eq.1' }, payload => {
-        if (payload.new && payload.new.data) setData(payload.new.data);
+        if (payload.new && payload.new.data) setData(normalizeData(payload.new.data));
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -920,7 +950,13 @@ export default function App() {
 
   function openRoom(room) {
     setActiveRoomId(room.id);
+    setActiveSession(room.session);
     setView('room');
+  }
+
+  function openSession(session) {
+    setActiveSession(session);
+    setView('session');
   }
 
   function handlePick(roundIdx, matchIdx, winnerName) {
@@ -1263,6 +1299,7 @@ export default function App() {
 
   function renderDashboard() {
     const doneRooms = qualifiers.length;
+    const sessions = [1, 2, 3, 4];
     return (
       <div className="view">
         <button type="button" className="back-btn" onClick={() => setView('landing')}><ChevronLeft size={16} /> Beranda</button>
@@ -1279,10 +1316,18 @@ export default function App() {
           </div>
         )}
 
-        <div className="room-grid">
-          {data.rooms.map(room => (
-            <RoomCard key={room.id} room={room} onOpen={() => openRoom(room)} />
-          ))}
+        <div className="session-grid">
+          {sessions.map(s => {
+            const roomsInSession = data.rooms.filter(r => r.session === s);
+            const doneInSession = roomsInSession.filter(r => getRoomChampion(r)).length;
+            return (
+              <button key={s} type="button" className="session-card" onClick={() => openSession(s)}>
+                <span className="session-card-label">Sesi</span>
+                <span className="session-card-number">{s}</span>
+                <span className="session-card-sub">{roomsInSession.length} ruangan &middot; {doneInSession}/{roomsInSession.length} juara</span>
+              </button>
+            );
+          })}
         </div>
 
         <section className="final-teaser" onClick={() => setView('final')}>
@@ -1296,6 +1341,25 @@ export default function App() {
     );
   }
 
+  function renderSessionRooms() {
+    const roomsInSession = data.rooms.filter(r => r.session === activeSession);
+    return (
+      <div className="view">
+        <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Sesi</button>
+        <section className="hero">
+          <div className="hero-badge">Sesi {activeSession}</div>
+          <h2>Ruangan Sesi {activeSession}</h2>
+          <p>{roomsInSession.length} ruangan berlangsung di sesi ini</p>
+        </section>
+        <div className="room-grid">
+          {roomsInSession.map(room => (
+            <RoomCard key={room.id} room={room} onOpen={() => openRoom(room)} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   function renderRoom() {
     if (!activeRoom) return null;
     const champ = getRoomChampion(activeRoom);
@@ -1303,7 +1367,7 @@ export default function App() {
     return (
       <div className="view">
         {role !== 'pengawas' && (
-          <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Ruangan</button>
+          <button type="button" className="back-btn" onClick={() => setView('session')}><ChevronLeft size={16} /> Ruangan Sesi {activeRoom.session}</button>
         )}
 
         <div className="room-header">
@@ -1465,6 +1529,7 @@ export default function App() {
         {view === 'landing' && renderLanding()}
         {view === 'login' && renderLogin()}
         {view === 'dashboard' && renderDashboard()}
+        {view === 'session' && renderSessionRooms()}
         {view === 'room' && renderRoom()}
         {view === 'manage' && renderManage()}
         {view === 'final' && renderFinal()}
