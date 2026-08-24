@@ -622,7 +622,7 @@ function GlobalStyle() {
       .btn-ghost:hover { border-color: #C28E12; }
       .btn-crimson { background: #D6293F; color: #FFFFFF; }
       .btn-crimson:hover { background: #B31F32; }
-      .session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; max-width: 640px; margin: 0 auto; width: 100%; }
+      .session-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; max-width: 900px; margin: 0 auto; width: 100%; }
       .session-card {
         display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
         background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 18px; padding: 26px 16px;
@@ -695,11 +695,11 @@ function GlobalStyle() {
         font-family: inherit; padding: 3px 18px 3px 7px; cursor: pointer; gap: 1px;
       }
       .sbox-name {
-        color: #2B2013; font-size: 10px; font-weight: 700; line-height: 1.25;
+        color: #2B2013; font-size: 14px; font-weight: 700; line-height: 1.2;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .sbox-school {
-        color: #A69C89; font-size: 7px; font-weight: 500; line-height: 1.2;
+        color: #8D8371; font-size: 9px; font-weight: 600; line-height: 1.2;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .sbox-row:first-of-type { border-bottom: 1px solid #E9DCC0; }
@@ -713,8 +713,8 @@ function GlobalStyle() {
       .sbox-detail.has-data { color: #A6790E; }
       .sbox-duration { position: absolute; bottom: 2px; right: 4px; font-size: 8px; color: #ACA28D; }
       .sbox-center { border-color: #D9BE7E; border-width: 2px; }
-      .sbox-center .sbox-name { font-size: 15px; }
-      .sbox-center .sbox-school { font-size: 10px; }
+      .sbox-center .sbox-name { font-size: 19px; }
+      .sbox-center .sbox-school { font-size: 12px; }
       .sbox-center .sbox-row { padding: 8px 30px 8px 14px; }
       .sbox-center .sbox-detail { top: 8px; right: 8px; }
       .sbox-champion { animation: champion-glow 2.2s ease-in-out infinite; }
@@ -822,6 +822,10 @@ function GlobalStyle() {
         .ticket-body { flex-direction: column; }
         .ticket-vs { width: 26px; height: 26px; }
         .bracket-scroll { max-height: 62vh; padding: 12px; }
+        .session-grid { gap: 8px; }
+        .session-card { padding: 16px 6px; }
+        .session-card-number { font-size: 28px; }
+        .session-card-sub { font-size: 9px; }
       }
     `}</style>
   );
