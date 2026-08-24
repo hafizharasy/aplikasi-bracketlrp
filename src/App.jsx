@@ -6,15 +6,15 @@ const ROOM_COUNT = 10;
 const PARTICIPANTS_PER_ROOM = 64;
 const ROUND_NAMES = ['Babak 64 Besar', 'Babak 32 Besar', 'Babak 16 Besar', 'Perempat Final', 'Semifinal Ruangan', 'Final Ruangan'];
 const ADMIN_PIN = 'lrp2026';
-const SESSION_DEFAULT = { 1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 3, 8: 4, 9: 4, 10: 4 };
-const STAGE_W = 1600;
-const STAGE_H = 900;
-const HEADER_H = 46;
+const SESSION_DEFAULT = { 1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 2, 7: 3, 8: 3, 9: 4, 10: 4 };
+const STAGE_W = 2400;
+const STAGE_H = 1350;
+const HEADER_H = 60;
 const BODY_H = STAGE_H - HEADER_H;
 const SIDE_BASE = BODY_H / 16;
-const NORMAL_COL_W = 118;
-const CENTER_COL_W = 176;
-const GAP_W = 20;
+const NORMAL_COL_W = 177;
+const CENTER_COL_W = 264;
+const GAP_W = 30;
 const SIDE_ROUND_LABELS = ['64 Besar', '32 Besar', '16 Besar', 'Perempat Final', 'Semifinal'];
 
 function buildConnectorPath(fromCount, fromSlotH, gapWidth) {
@@ -98,12 +98,25 @@ function buildRoundsFromParticipants(participants) {
   return rounds;
 }
 
+function computeRoomNo(id) {
+  const session = SESSION_DEFAULT[id] || 1;
+  let roomNo = 0;
+  for (let i = 1; i <= id; i++) {
+    if ((SESSION_DEFAULT[i] || 1) === session) roomNo++;
+  }
+  return roomNo;
+}
+
 function createEmptyRoom(id) {
   const participants = Array.from({ length: PARTICIPANTS_PER_ROOM }, (_, i) => `Peserta R${id}-${i + 1}`);
+  const session = SESSION_DEFAULT[id] || 1;
+  const roomNo = computeRoomNo(id);
   return {
     id,
-    name: `Ruangan ${id}`,
-    session: SESSION_DEFAULT[id] || 1,
+    name: `Ruangan ${roomNo}`,
+    session,
+    roomNo,
+    schools: {},
     participants,
     rounds: buildRoundsFromParticipants(participants),
   };
@@ -179,14 +192,15 @@ function makeFinalMatch(round, p1, p2) {
   return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, round, p1, p2, winner: null, photo: null, durationMinutes: null, violations: '' };
 }
 
-function getPengawasPin(roomId) {
-  return `r${roomId}-2026`;
+function getPengawasPin(session, roomNo) {
+  return `s${session}r${roomNo}-2026`;
 }
 
 const COLUMN_ALIASES = {
   sesi: ['sesi', 'session'],
   ruangan: ['ruangan', 'room'],
   nama: ['nama', 'name', 'peserta'],
+  sekolah: ['sekolah', 'school', 'asal sekolah'],
 };
 
 function normalizeRow(raw) {
@@ -199,6 +213,7 @@ function normalizeRow(raw) {
     sesi: find(COLUMN_ALIASES.sesi),
     ruangan: find(COLUMN_ALIASES.ruangan),
     nama: find(COLUMN_ALIASES.nama),
+    sekolah: find(COLUMN_ALIASES.sekolah),
   };
 }
 
@@ -218,10 +233,12 @@ function groupRowsByRoom(rawRows) {
     const name = String(row.nama || '').trim();
     if (!roomId || roomId < 1 || roomId > ROOM_COUNT) return;
     if (!name) return;
-    if (!rooms[roomId]) rooms[roomId] = { session: null, names: [] };
+    if (!rooms[roomId]) rooms[roomId] = { session: null, names: [], schools: {} };
     const sesiVal = Number(row.sesi);
     if (!rooms[roomId].session && sesiVal >= 1 && sesiVal <= 4) rooms[roomId].session = sesiVal;
     rooms[roomId].names.push(name);
+    const school = String(row.sekolah || '').trim();
+    if (school) rooms[roomId].schools[name] = school;
   });
   return rooms;
 }
@@ -273,7 +290,7 @@ function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpen
   );
 }
 
-function MatchDetailModal({ match, canEdit, onClose, onUploadPhoto, onSaveDetails, title }) {
+function MatchDetailModal({ match, canEdit, onClose, onUploadPhoto, onSaveDetails, onResetMatch, title }) {
   const [duration, setDuration] = useState(match.durationMinutes != null ? String(match.durationMinutes) : '');
   const [violations, setViolations] = useState(match.violations || '');
   const [uploading, setUploading] = useState(false);
@@ -296,6 +313,9 @@ function MatchDetailModal({ match, canEdit, onClose, onUploadPhoto, onSaveDetail
 
   return (
     <Modal title={title} onClose={onClose} wide>
+      {(match.p1 || match.p2) && (
+        <p className="modal-matchup">{match.p1 || 'Menunggu…'} <span>vs</span> {match.p2 || 'Menunggu…'}</p>
+      )}
       <label className="field-label">Foto Hasil Pertandingan</label>
       {match.photo ? (
         <img src={match.photo} alt="Foto hasil pertandingan" className="match-photo-preview" />
@@ -324,6 +344,9 @@ function MatchDetailModal({ match, canEdit, onClose, onUploadPhoto, onSaveDetail
       )}
 
       {canEdit && <button type="button" className="btn btn-gold full" onClick={handleSave}>Simpan Detail</button>}
+      {canEdit && match.winner && onResetMatch && (
+        <button type="button" className="btn btn-ghost full" onClick={onResetMatch}><RotateCcw size={13} /> Reset Hasil Pertandingan Ini</button>
+      )}
     </Modal>
   );
 }
@@ -336,7 +359,7 @@ function RoomCard({ room, onOpen }) {
   return (
     <button className="room-card" onClick={onOpen} type="button">
       <div className="room-card-top">
-        <span className="room-number">{String(room.id).padStart(2, '0')}</span>
+        <span className="room-number">{String(room.roomNo).padStart(2, '0')}</span>
         <span className="session-badge">Sesi {room.session}</span>
       </div>
       <h3 className="room-name">{room.name}</h3>
@@ -351,7 +374,7 @@ function RoomCard({ room, onOpen }) {
   );
 }
 
-function StageBox({ p1, p2, winner, onPick, readOnly, photo, durationMinutes, violations, onOpenDetail, center }) {
+function StageBox({ p1, p2, winner, school1, school2, onPick, readOnly, showDetail, photo, durationMinutes, violations, onOpenDetail, center }) {
   const playable = !!(p1 && p2) && !readOnly;
   const hasExtra = !!(photo || violations);
   return (
@@ -362,7 +385,8 @@ function StageBox({ p1, p2, winner, onPick, readOnly, photo, durationMinutes, vi
         disabled={!playable || !p1}
         onClick={() => p1 && onPick(p1)}
       >
-        {p1 || '—'}
+        <span className="sbox-name">{p1 || '—'}</span>
+        {school1 && <span className="sbox-school">{school1}</span>}
       </button>
       <button
         type="button"
@@ -370,12 +394,15 @@ function StageBox({ p1, p2, winner, onPick, readOnly, photo, durationMinutes, vi
         disabled={!playable || !p2}
         onClick={() => p2 && onPick(p2)}
       >
-        {p2 || '—'}
+        <span className="sbox-name">{p2 || '—'}</span>
+        {school2 && <span className="sbox-school">{school2}</span>}
       </button>
-      <button type="button" className={'sbox-detail' + (hasExtra ? ' has-data' : '')} onClick={onOpenDetail} aria-label="Detail pertandingan">
-        <Camera size={center ? 13 : 9} />
-      </button>
-      {durationMinutes != null && <span className="sbox-duration">{durationMinutes}m</span>}
+      {showDetail && (
+        <button type="button" className={'sbox-detail' + (hasExtra ? ' has-data' : '')} onClick={onOpenDetail} aria-label="Detail pertandingan">
+          <Camera size={center ? 13 : 9} />
+        </button>
+      )}
+      {showDetail && durationMinutes != null && <span className="sbox-duration">{durationMinutes}m</span>}
     </div>
   );
 }
@@ -409,6 +436,7 @@ function ScaledStage({ baseWidth, baseHeight, children }) {
 
 function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail }) {
   const { matchCols, connectors } = STAGE_LAYOUT;
+  const schools = room.schools || {};
 
   return (
     <ScaledStage baseWidth={STAGE_W} baseHeight={STAGE_H}>
@@ -448,7 +476,10 @@ function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail }) {
                 <StageBox
                   p1={m.p1}
                   p2={m.p2}
+                  school1={schools[m.p1]}
+                  school2={schools[m.p2]}
                   winner={m.winner}
+                  showDetail={canEdit}
                   photo={m.photo}
                   durationMinutes={m.durationMinutes}
                   violations={m.violations}
@@ -635,26 +666,43 @@ function GlobalStyle() {
       .stage-box-wrap { position: absolute; transform: translateY(-50%); }
       .sbox { width: 100%; background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 7px; overflow: hidden; position: relative; }
       .sbox-row {
-        display: block; width: 100%; text-align: left; background: none; border: none;
-        color: #2B2013; font-family: inherit; font-size: 11px; font-weight: 600; padding: 5px 18px 5px 7px; cursor: pointer;
+        display: flex; flex-direction: column; width: 100%; text-align: left; background: none; border: none;
+        font-family: inherit; padding: 3px 18px 3px 7px; cursor: pointer; gap: 1px;
+      }
+      .sbox-name {
+        color: #2B2013; font-size: 10px; font-weight: 700; line-height: 1.25;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .sbox-school {
+        color: #A69C89; font-size: 7px; font-weight: 500; line-height: 1.2;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .sbox-row:first-of-type { border-bottom: 1px solid #E9DCC0; }
       .sbox-row:disabled { cursor: default; }
       .sbox-row:not(:disabled):hover { background: rgba(194,142,18,0.1); }
-      .sbox-row.win { color: #A6790E; background: rgba(194,142,18,0.14); }
-      .sbox-row.lose { opacity: 0.4; text-decoration: line-through; }
+      .sbox-row.win .sbox-name { color: #A6790E; }
+      .sbox-row.win { background: rgba(194,142,18,0.14); }
+      .sbox-row.lose { opacity: 0.4; }
+      .sbox-row.lose .sbox-name { text-decoration: line-through; }
       .sbox-detail { position: absolute; top: 3px; right: 3px; background: none; border: none; color: #ACA28D; cursor: pointer; padding: 1px; line-height: 0; }
       .sbox-detail.has-data { color: #A6790E; }
       .sbox-duration { position: absolute; bottom: 2px; right: 4px; font-size: 8px; color: #ACA28D; }
       .sbox-center { border-color: #D9BE7E; border-width: 2px; }
-      .sbox-center .sbox-row { font-size: 15px; padding: 12px 30px 12px 14px; }
+      .sbox-center .sbox-name { font-size: 15px; }
+      .sbox-center .sbox-school { font-size: 10px; }
+      .sbox-center .sbox-row { padding: 8px 30px 8px 14px; }
       .sbox-center .sbox-detail { top: 8px; right: 8px; }
       .sbox-champion { animation: champion-glow 2.2s ease-in-out infinite; }
       @keyframes champion-glow {
         0%, 100% { box-shadow: 0 0 14px rgba(194,142,18,0.4); }
         50% { box-shadow: 0 0 32px rgba(194,142,18,0.8); }
       }
+      .modal-matchup { text-align: center; font-size: 13px; font-weight: 700; color: #2B2013; margin: 0 0 6px; }
+      .modal-matchup span { color: #A6790E; font-weight: 600; margin: 0 6px; font-size: 11px; }
+      .participant-manage-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; padding-right: 2px; }
+      .participant-row { display: flex; align-items: center; gap: 8px; }
+      .p-row-no { flex-shrink: 0; width: 24px; text-align: center; font-size: 11px; color: #A69C89; font-weight: 700; }
+      .participant-row .text-input { padding: 8px 10px; font-size: 12px; }
       .match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
       .ticket {
         position: relative; background: #FFFFFF; border: 1px solid #E9DCC0;
@@ -770,6 +818,7 @@ export default function App() {
   const [detailTarget, setDetailTarget] = useState(null); // { scope: 'room', roomId, roundIdx, matchIdx } | { scope: 'final', matchId }
 
   const [bulkTarget, setBulkTarget] = useState(null);
+  const [draftParticipants, setDraftParticipants] = useState(null);
   const [bulkText, setBulkText] = useState('');
   const [importFileRows, setImportFileRows] = useState(null);
   const [importFileError, setImportFileError] = useState('');
@@ -805,6 +854,15 @@ export default function App() {
     })();
     return () => { alive = false; };
   }, []);
+
+  // Lock pengawas to their own room: if they ever land on the dashboard (all-rooms list),
+  // bounce them straight back to their assigned room. Admin and public are unaffected.
+  useEffect(() => {
+    if (role === 'pengawas' && view === 'dashboard') {
+      setView('room');
+      setActiveRoomId(pengawasRoomId);
+    }
+  }, [role, view, pengawasRoomId]);
 
   // Live sync: reflect changes made by other admins/devices instantly, no refresh needed
   useEffect(() => {
@@ -890,16 +948,20 @@ export default function App() {
       setView('dashboard');
       return;
     }
-    const match = pin.trim().match(/^r(\d{1,2})-2026$/i);
-    const roomId = match ? Number(match[1]) : null;
-    if (roomId && roomId >= 1 && roomId <= ROOM_COUNT) {
-      setRole('pengawas');
-      setPengawasRoomId(roomId);
-      setPin('');
-      setPinError(false);
-      setActiveRoomId(roomId);
-      setView('room');
-      return;
+    const match = pin.trim().match(/^s(\d{1,2})r(\d{1,2})-2026$/i);
+    if (match) {
+      const sessionNum = Number(match[1]);
+      const roomNoNum = Number(match[2]);
+      const target = data.rooms.find(r => r.session === sessionNum && r.roomNo === roomNoNum);
+      if (target) {
+        setRole('pengawas');
+        setPengawasRoomId(target.id);
+        setPin('');
+        setPinError(false);
+        setActiveRoomId(target.id);
+        setView('room');
+        return;
+      }
     }
     setPinError(true);
   }
@@ -1033,6 +1095,9 @@ export default function App() {
         next.rooms[idx].participants = participants;
         next.rooms[idx].rounds = buildRoundsFromParticipants(participants);
         if (group.session) next.rooms[idx].session = group.session;
+        if (group.schools && Object.keys(group.schools).length > 0) {
+          next.rooms[idx].schools = { ...(next.rooms[idx].schools || {}), ...group.schools };
+        }
       });
       persist(next);
       setBulkTarget(null);
@@ -1076,11 +1141,68 @@ export default function App() {
     persist(next);
   }
 
-  function requestReset() {
+  function requestResetRoom() {
+    if (!activeRoom) return;
     setConfirmState({
-      message: 'Semua data turnamen (peserta & hasil) akan dihapus dan diatur ulang ke kondisi awal. Yakin?',
-      onConfirm: () => { persist(createInitialData()); setConfirmState(null); },
+      message: `Semua peserta & hasil pertandingan di ${activeRoom.name} (Sesi ${activeRoom.session}) akan dihapus dan diatur ulang. Ruangan lain tidak terpengaruh. Yakin?`,
+      onConfirm: () => {
+        const next = clone(data);
+        const idx = next.rooms.findIndex(r => r.id === activeRoom.id);
+        next.rooms[idx] = createEmptyRoom(activeRoom.id);
+        persist(next);
+        setConfirmState(null);
+      },
     });
+  }
+
+  function requestResetMatch(scope, roomId, roundIdx, matchIdx, finalMatchId) {
+    setConfirmState({
+      message: 'Hasil pertandingan ini akan dihapus (termasuk hasil babak setelahnya yang berasal dari sini, kalau ada). Yakin?',
+      onConfirm: () => {
+        const next = clone(data);
+        if (scope === 'room') {
+          const room = next.rooms.find(r => r.id === roomId);
+          clearMatch(room, roundIdx, matchIdx);
+        } else {
+          const m = next.finalStage.matches.find(mm => mm.id === finalMatchId);
+          if (m) m.winner = null;
+        }
+        persist(next);
+        setConfirmState(null);
+        setDetailTarget(null);
+      },
+    });
+  }
+
+  function openManageParticipants() {
+    if (!activeRoom) return;
+    setDraftParticipants(activeRoom.participants.map(n => ({ name: n, school: (activeRoom.schools && activeRoom.schools[n]) || '' })));
+    setView('manage');
+  }
+
+  function saveManageChanges() {
+    if (!draftParticipants || !activeRoom) return;
+    const next = clone(data);
+    const room = next.rooms.find(r => r.id === activeRoom.id);
+    const oldNames = room.participants.slice();
+    const newSchools = {};
+    draftParticipants.forEach((p, i) => {
+      const newName = (p.name || '').trim() || `Peserta R${room.id}-${i + 1}`;
+      const oldName = oldNames[i];
+      if (oldName !== newName) {
+        room.participants[i] = newName;
+        room.rounds.forEach(round => round.forEach(m => {
+          if (m.p1 === oldName) m.p1 = newName;
+          if (m.p2 === oldName) m.p2 = newName;
+          if (m.winner === oldName) m.winner = newName;
+        }));
+      }
+      if (p.school && p.school.trim()) newSchools[newName] = p.school.trim();
+    });
+    room.schools = newSchools;
+    persist(next);
+    setDraftParticipants(null);
+    setView('room');
   }
 
   function updateSession(roomId, session) {
@@ -1154,7 +1276,6 @@ export default function App() {
         {isAdmin && (
           <div className="toolbar">
             <button type="button" className="btn btn-gold" onClick={() => setBulkTarget('global')}><Upload size={15} /> Impor 640 Peserta</button>
-            <button type="button" className="btn btn-ghost" onClick={requestReset}><RotateCcw size={15} /> Atur Ulang</button>
           </div>
         )}
 
@@ -1181,20 +1302,24 @@ export default function App() {
     const canEdit = canEditRoom(activeRoom.id);
     return (
       <div className="view">
-        <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Ruangan</button>
+        {role !== 'pengawas' && (
+          <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Ruangan</button>
+        )}
 
         <div className="room-header">
           <div>
             <h2>{activeRoom.name}</h2>
-            <p>64 peserta &middot; Sesi {activeRoom.session}{role === 'pengawas' && pengawasRoomId === activeRoom.id ? ' · kamu masuk sebagai pengawas ruangan ini' : ''}</p>
+            <p>Sesi {activeRoom.session} &middot; 64 peserta{role === 'pengawas' && pengawasRoomId === activeRoom.id ? ' · kamu masuk sebagai pengawas ruangan ini' : ''}</p>
           </div>
           {isAdmin && (
             <div className="room-header-actions">
               <select value={activeRoom.session} onChange={e => updateSession(activeRoom.id, e.target.value)}>
                 {[1, 2, 3, 4].map(s => <option key={s} value={s}>Sesi {s}</option>)}
               </select>
+              <button type="button" className="btn btn-ghost sm" onClick={openManageParticipants}><Plus size={13} /> Kelola Peserta</button>
               <button type="button" className="btn btn-ghost sm" onClick={() => setBulkTarget(activeRoom.id)}><Upload size={13} /> Impor</button>
               <button type="button" className="btn btn-ghost sm" onClick={handleSimulate}><Shuffle size={13} /> Simulasikan</button>
+              <button type="button" className="btn btn-ghost sm" onClick={requestResetRoom}><RotateCcw size={13} /> Reset Ruangan</button>
             </div>
           )}
         </div>
@@ -1209,6 +1334,45 @@ export default function App() {
           onPick={(ri, mi, winnerName) => handlePick(ri, mi, winnerName)}
           onOpenDetail={(ri, mi) => setDetailTarget({ scope: 'room', roomId: activeRoom.id, roundIdx: ri, matchIdx: mi })}
         />
+      </div>
+    );
+  }
+
+  function renderManage() {
+    if (!activeRoom || !draftParticipants) return null;
+    function updateDraft(i, field, value) {
+      setDraftParticipants(prev => prev.map((p, idx) => (idx === i ? { ...p, [field]: value } : p)));
+    }
+    return (
+      <div className="view">
+        <button type="button" className="back-btn" onClick={() => { setDraftParticipants(null); setView('room'); }}><ChevronLeft size={16} /> Batal, Kembali</button>
+        <div className="room-header">
+          <div>
+            <h2>Kelola Peserta</h2>
+            <p>{activeRoom.name} &middot; Sesi {activeRoom.session} &middot; isi satu per satu, atau pakai impor massal</p>
+          </div>
+          <button type="button" className="btn btn-ghost sm" onClick={() => setBulkTarget(activeRoom.id)}><Upload size={13} /> Impor Massal</button>
+        </div>
+        <div className="participant-manage-list">
+          {draftParticipants.map((p, i) => (
+            <div key={i} className="participant-row">
+              <span className="p-row-no">{i + 1}</span>
+              <input
+                className="text-input"
+                value={p.name}
+                onChange={e => updateDraft(i, 'name', e.target.value)}
+                placeholder={`Nama peserta ${i + 1}`}
+              />
+              <input
+                className="text-input"
+                value={p.school}
+                onChange={e => updateDraft(i, 'school', e.target.value)}
+                placeholder="Nama sekolah"
+              />
+            </div>
+          ))}
+        </div>
+        <button type="button" className="btn btn-gold full" onClick={saveManageChanges}>Simpan Semua Perubahan</button>
       </div>
     );
   }
@@ -1237,7 +1401,7 @@ export default function App() {
             const c = getRoomChampion(room);
             return (
               <div key={room.id} className={'qualifier-chip' + (c ? ' ready' : '')}>
-                <span className="qualifier-room">{room.name}</span>
+                <span className="qualifier-room">Sesi {room.session} · {room.name}</span>
                 <span className="qualifier-name">{c || 'Belum ada juara'}</span>
               </div>
             );
@@ -1264,7 +1428,7 @@ export default function App() {
                 violations={m.violations}
                 onDelete={isAdmin ? () => deleteFinalMatch(m.id) : undefined}
                 onPick={winnerName => pickFinalWinner(m.id, winnerName)}
-                onOpenDetail={() => setDetailTarget({ scope: 'final', matchId: m.id })}
+                onOpenDetail={isAdmin ? () => setDetailTarget({ scope: 'final', matchId: m.id }) : undefined}
               />
             ))}
           </div>
@@ -1302,6 +1466,7 @@ export default function App() {
         {view === 'login' && renderLogin()}
         {view === 'dashboard' && renderDashboard()}
         {view === 'room' && renderRoom()}
+        {view === 'manage' && renderManage()}
         {view === 'final' && renderFinal()}
       </main>
 
@@ -1309,16 +1474,19 @@ export default function App() {
         <MatchDetailModal
           match={getDetailMatch()}
           canEdit={detailCanEdit()}
-          title={detailTarget.scope === 'room' ? `Detail Pertandingan — Ruangan ${detailTarget.roomId}` : 'Detail Pertandingan — Babak Lanjutan'}
+          title={detailTarget.scope === 'room' ? `Detail Pertandingan — ${(data.rooms.find(r => r.id === detailTarget.roomId) || {}).name || ''} (Sesi ${(data.rooms.find(r => r.id === detailTarget.roomId) || {}).session || ''})` : 'Detail Pertandingan — Babak Lanjutan'}
           onClose={() => setDetailTarget(null)}
           onUploadPhoto={handleUploadPhoto}
           onSaveDetails={handleSaveDetails}
+          onResetMatch={detailTarget.scope === 'room'
+            ? () => requestResetMatch('room', detailTarget.roomId, detailTarget.roundIdx, detailTarget.matchIdx)
+            : () => requestResetMatch('final', null, null, null, detailTarget.matchId)}
         />
       )}
 
       {bulkTarget !== null && (
         <Modal
-          title={bulkTarget === 'global' ? 'Impor 640 Peserta' : `Impor Peserta — Ruangan ${bulkTarget}`}
+          title={bulkTarget === 'global' ? 'Impor 640 Peserta' : `Impor Peserta — ${(data.rooms.find(r => r.id === bulkTarget) || {}).name || ''} (Sesi ${(data.rooms.find(r => r.id === bulkTarget) || {}).session || ''})`}
           onClose={() => { setBulkTarget(null); setBulkText(''); setImportFileRows(null); setImportFileError(''); }}
           wide
         >
