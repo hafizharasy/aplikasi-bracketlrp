@@ -114,3 +114,62 @@ Geometri bracket ini (posisi tiap kotak & garis penghubung) sudah aku verifikasi
 ## Batasan yang perlu diketahui
 
 Data tersimpan sebagai satu baris JSON, jadi kalau dua admin nulis hasil di detik yang persis sama, yang terakhir nulis yang menang (last-write-wins) — sama seperti karakteristik versi Claude sebelumnya, bukan regresi baru.
+
+## Revisi terbaru: penomoran ruangan, kunci akses, reset granular, kelola peserta
+
+- **Ruangan diberi nomor ulang per sesi.** Sesi 1 & 2 masing-masing punya Ruangan 1-3, Sesi 3 & 4 masing-masing punya Ruangan 1-2 (total tetap 10 ruangan). Kode akses pengawas ikut berubah formatnya jadi `s{sesi}r{ruangan}-2026` — contoh `s1r1-2026` untuk Sesi 1 Ruangan 1, `s3r2-2026` untuk Sesi 3 Ruangan 2.
+- **Detail pertandingan (foto/durasi/pelanggaran) disembunyikan dari publik.** Ikon kamera di tiap kotak cuma muncul untuk pengawas ruangan itu dan admin — peserta/wali murid cuma lihat hasil bracket-nya saja.
+- **Pengawas dikunci ke ruangannya sendiri.** Setelah login, pengawas tidak bisa pindah ke ruangan lain atau lihat dashboard semua ruangan — otomatis diarahkan balik kalau mencoba. Hanya admin yang bisa melihat & mengelola semua ruangan sekaligus.
+- **Reset jadi granular.** Tombol reset semua ruangan sekaligus sudah dihapus. Sekarang ada "Reset Ruangan" (di halaman ruangan, admin) yang cuma me-reset satu ruangan itu, dan "Reset Hasil Pertandingan Ini" (di modal detail pertandingan) yang cuma membatalkan hasil satu pertandingan spesifik.
+- **Kelola Peserta**, menu baru khusus admin untuk mengisi nama satu per satu (selain impor massal yang sudah ada) — cocok kalau panitia mau menyusun sendiri siapa lawan siapa berdasarkan pertimbangan kualifikasi peserta.
+- **Nama sekolah** kini tampil di bawah nama peserta di bracket. Diisi admin lewat Kelola Peserta satu-satu, atau lewat kolom "sekolah" (opsional) di template Excel/CSV impor massal. Pengawas ruangan tidak bisa mengubah nama peserta maupun sekolah — itu murni wewenang admin.
+
+## Level Penuh: RLS terkunci dengan Supabase Auth beneran
+
+Ini perubahan yang lebih besar dari update-update sebelumnya, jadi dibaca pelan-pelan ya. Yang berubah secara arsitektur:
+
+- Tabel `tournament_state` sekarang **tidak bisa ditulis langsung** oleh siapa pun dari browser, sekalipun sudah login. Satu-satunya jalan menulis adalah lewat **Edge Function** (`update-match`) yang jalan di server Supabase.
+- Login sekarang pakai **akun Supabase Auth beneran** (bukan lagi PIN yang cuma dicek di JavaScript), tapi **kode yang diketik pengguna tetap sama persis** seperti sebelumnya (`lrp2026` untuk admin, `s1r1-2026` dst untuk pengawas) — jadi tidak ada yang perlu diajarkan ulang ke panitia.
+- Edge Function itu memeriksa identitas si pemanggil dari sesi login-nya, dan khusus untuk pengawas, **memastikan perubahan yang dikirim cuma menyentuh ruangan miliknya sendiri** — dicoba tulis ke ruangan lain akan ditolak, bukan cuma disembunyikan di tampilan. Logika pemeriksaan ini sudah aku uji terpisah dengan 8 skenario (termasuk skenario "pengawas nyoba nyelundupin perubahan ke ruangan lain") sebelum ditulis ke Edge Function-nya.
+- Bonus: karena sekarang pakai sesi login beneran, admin/pengawas **tidak perlu login ulang setiap refresh halaman** — sesinya tersimpan otomatis oleh Supabase.
+
+### Langkah setup (urutannya penting)
+
+**1. Jalankan ulang `supabase/schema.sql`** di SQL Editor (yang ini aman dijalankan ulang meskipun sudah pernah pakai versi lama — otomatis menghapus policy tulis publik yang lama).
+
+**2. Install Supabase CLI** (kalau belum ada) dan login:
+```bash
+npm install -g supabase
+supabase login
+```
+
+**3. Hubungkan folder proyek ke project Supabase kamu:**
+```bash
+supabase link --project-ref xxxxxxxxxxxxx
+```
+(`xxxxxxxxxxxxx` ada di URL dashboard Supabase kamu, atau di Settings > General.)
+
+**4. Deploy Edge Function-nya:**
+```bash
+supabase functions deploy update-match
+```
+
+**5. Buat 11 akun (1 admin + 10 pengawas).** Ini dijalankan SATU KALI di komputer kamu sendiri, TIDAK PERNAH di-commit ke GitHub atau dijalankan di browser, karena butuh **Service Role key** (kunci paling berkuasa, beda dari anon key biasa — ada di Settings > API > `service_role`, bukan yang `anon public`):
+```bash
+cd scripts
+npm install @supabase/supabase-js
+SUPABASE_URL="https://xxxxx.supabase.co" SUPABASE_SERVICE_ROLE_KEY="isi-service-role-key-di-sini" node setup-auth-users.mjs
+```
+Setelah ini jalan sukses, kode login admin/pengawas langsung bisa dipakai — **sama persis** seperti kode yang sudah kamu pakai sekarang.
+
+**6. Update `App.jsx`** seperti biasa (timpa di GitHub, Vercel auto-deploy).
+
+### Kalau mau ubah/tambah pengawas nanti
+
+Jalankan lagi `scripts/setup-auth-users.mjs` — script ini aman dijalankan berkali-kali, otomatis mendeteksi akun yang sudah ada dan cuma memperbarui passwordnya kalau perlu.
+
+### Kalau ada yang gagal simpan
+
+Sekarang kalau penyimpanan gagal (misalnya sesi kadaluarsa, atau — seharusnya tidak terjadi lewat aplikasi normal — ada percobaan menulis ke ruangan yang bukan miliknya), muncul badge merah kecil di header aplikasi menjelaskan alasannya, dan perubahan yang gagal otomatis dibatalkan di tampilan (tidak diam-diam hilang tanpa pemberitahuan seperti sebelumnya).
+
+
