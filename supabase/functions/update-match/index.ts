@@ -53,6 +53,10 @@ function validateWrite(currentData, newData, callerRole, callerSession, callerRo
     return { ok: false, error: 'Forbidden: modified babak lanjutan' };
   }
 
+  if (JSON.stringify(currentData.settings) !== JSON.stringify(newData.settings)) {
+    return { ok: false, error: 'Forbidden: modified settings' };
+  }
+
   const oldRoom = currentData.rooms[ownRoomIdx];
   const newRoom = newData.rooms[ownRoomIdx];
   const lockedFields = ['id', 'name', 'session', 'roomNo', 'schools', 'participants'];

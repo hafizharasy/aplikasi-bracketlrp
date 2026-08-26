@@ -181,6 +181,14 @@ Sekarang kalau penyimpanan gagal (misalnya sesi kadaluarsa, atau — seharusnya 
 - **Durasi pertandingan** diisi lewat dua dropdown — menit (0-10) dan detik (0-59) — supaya presisi sampai hitungan detik. Ditampilkan di bracket dan modal detail dalam format `menit:detik`.
 - **Edge Function `update-match` diperbarui** untuk menegakkan aturan "pengawasName admin-only" ini juga di level server, per pertandingan — pengawas ruangan tetap bisa mengubah hasil/durasi/catatan pelanggaran pertandingan di ruangannya sendiri, tapi percobaan mengubah `pengawasName` lewat jalur API langsung akan ditolak. **Perlu deploy ulang** (`supabase functions deploy update-match`) supaya versi terbaru ini aktif di server — logika penolakannya sudah diuji terpisah dengan 5 skenario (termasuk percobaan mengganti nama pengawas yang sudah ada) sebelum ditulis ke function-nya.
 
+## Revisi: nama pengawas tampil langsung di bracket, bisa diatur visibilitasnya
+
+- **Nama pengawas kini tampil sebagai teks langsung** di kotak pertandingan (bukan cuma indikator titik di ikon) — muncul sebagai baris kecil di bawah kedua peserta, lengkap dengan ikon kecil.
+- **Admin bisa mengatur visibilitasnya ke publik** lewat centang "Tampilkan nama pengawas ke publik" di dashboard. Default-nya **tersembunyi** dari publik. Admin dan pengawas ruangan yang bersangkutan selalu bisa melihatnya sendiri, terlepas dari pengaturan ini.
+- Kanvas bracket diperbesar lagi (~25%) supaya baris nama pengawas ini muat dengan nyaman tanpa bikin kotak-kotak lain jadi sempit — geometrinya sudah diverifikasi ulang sebelum diterapkan, sama seperti setiap kali ukurannya berubah.
+- **Edge Function diperbarui lagi**: field `settings` (tempat pengaturan visibilitas ini disimpan) sekarang admin-only juga — pengawas tidak bisa mengubah pengaturan ini lewat jalur API, sudah diuji terpisah dengan 3 skenario tambahan. **Perlu deploy ulang** (`supabase functions deploy update-match`) lagi untuk versi ini.
+
+
 
 
 

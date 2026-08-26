@@ -7,14 +7,14 @@ const PARTICIPANTS_PER_ROOM = 64;
 const ROUND_NAMES = ['Babak 64 Besar', 'Babak 32 Besar', 'Babak 16 Besar', 'Perempat Final', 'Semifinal Ruangan', 'Final Ruangan'];
 const ADMIN_PIN = 'lrp2026';
 const SESSION_DEFAULT = { 1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 2, 7: 3, 8: 3, 9: 4, 10: 4 };
-const STAGE_H = 1600;
+const STAGE_H = 1990;
 const STAGE_W = STAGE_H * 16 / 9;
-const HEADER_H = 64;
+const HEADER_H = 70;
 const BODY_H = STAGE_H - HEADER_H;
 const SIDE_BASE = BODY_H / 16;
-const NORMAL_COL_W = 210;
-const CENTER_COL_W = 314;
-const GAP_W = 36;
+const NORMAL_COL_W = 261;
+const CENTER_COL_W = 390;
+const GAP_W = 45;
 const SIDE_ROUND_LABELS = ['64 Besar', '32 Besar', '16 Besar', 'Perempat Final', 'Semifinal'];
 
 function buildConnectorPath(fromCount, fromSlotH, gapWidth) {
@@ -126,6 +126,7 @@ function createInitialData() {
   return {
     rooms: Array.from({ length: ROOM_COUNT }, (_, i) => createEmptyRoom(i + 1)),
     finalStage: { matches: [] },
+    settings: { showPengawasToPublic: false },
   };
 }
 
@@ -141,7 +142,8 @@ function normalizeData(raw) {
     return { ...room, session, roomNo, schools: room.schools || {}, name: `Ruangan ${roomNo}` };
   });
   const finalStage = raw.finalStage && Array.isArray(raw.finalStage.matches) ? raw.finalStage : { matches: [] };
-  return { ...raw, rooms, finalStage };
+  const settings = { showPengawasToPublic: false, ...(raw.settings || {}) };
+  return { ...raw, rooms, finalStage, settings };
 }
 
 function formatDuration(totalSeconds) {
@@ -428,7 +430,7 @@ function RoomCard({ room, onOpen }) {
   );
 }
 
-function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, readOnly, showDetail, photo, durationSeconds, violations, onOpenDetail, onOpenPengawas, center }) {
+function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, readOnly, showDetail, showPengawasText, photo, durationSeconds, violations, onOpenDetail, onOpenPengawas, center }) {
   const playable = !!(p1 && p2) && !readOnly;
   const hasExtra = !!(photo || violations);
   const isChampion = center && !!winner;
@@ -457,6 +459,9 @@ function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, read
         <span className="sbox-name">{p2 || '—'}</span>
         <span className={'sbox-school' + (school2 ? '' : ' placeholder')}>{school2 || 'Nama Sekolah'}</span>
       </button>
+      {showPengawasText && pengawasName && (
+        <div className="sbox-pengawas"><UserCog size={center ? 12 : 8} /> {pengawasName}</div>
+      )}
       {showDetail && (
         <div className="sbox-icons">
           {onOpenPengawas && (
@@ -501,7 +506,7 @@ function ScaledStage({ baseWidth, baseHeight, children }) {
   );
 }
 
-function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail, onOpenPengawas }) {
+function MirrorBracketStage({ room, canEdit, showPengawasText, onPick, onOpenDetail, onOpenPengawas }) {
   const { matchCols, connectors } = STAGE_LAYOUT;
   const schools = room.schools || {};
 
@@ -546,6 +551,7 @@ function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail, onOpenPengawa
                   school1={schools[m.p1]}
                   school2={schools[m.p2]}
                   pengawasName={m.pengawasName}
+                  showPengawasText={showPengawasText}
                   winner={m.winner}
                   showDetail={canEdit}
                   photo={m.photo}
@@ -680,7 +686,9 @@ function GlobalStyle() {
       .login-card svg { color: #C28E12; }
       .login-card h2 { font-family: 'Bungee', cursive; font-weight: 400; font-size: 18px; margin: 4px 0 0; color: #2B2013; }
       .login-card .text-input { text-align: center; }
-      .toolbar { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+      .toolbar { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; }
+      .pengawas-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8D8371; cursor: pointer; }
+      .pengawas-toggle input { accent-color: #C28E12; width: 15px; height: 15px; cursor: pointer; }
       .btn {
         display: inline-flex; align-items: center; gap: 6px;
         border-radius: 10px; padding: 9px 14px; font-size: 13px; font-weight: 600;
@@ -787,6 +795,12 @@ function GlobalStyle() {
       .sbox-detail { background: none; border: none; color: #ACA28D; cursor: pointer; padding: 1px; line-height: 0; }
       .sbox-detail.has-data { color: #A6790E; }
       .sbox-duration { position: absolute; bottom: 2px; right: 4px; font-size: 8px; color: #ACA28D; }
+      .sbox-pengawas {
+        display: flex; align-items: center; gap: 3px; font-size: 9px; color: #8D8371;
+        padding: 4px 18px 4px 7px; border-top: 1px solid #E9DCC0;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .sbox-center .sbox-pengawas { font-size: 12px; padding: 6px 30px 6px 14px; }
       .sbox-center { border-color: #D9BE7E; border-width: 2px; }
       .sbox-center .sbox-name { font-size: 22px; }
       .sbox-center .sbox-school { font-size: 14px; }
@@ -1420,6 +1434,12 @@ export default function App() {
     persist(next);
   }
 
+  function toggleShowPengawasToPublic(value) {
+    const next = clone(data);
+    next.settings = { ...(next.settings || {}), showPengawasToPublic: value };
+    persist(next);
+  }
+
   function savePengawasName(name) {
     if (!pengawasTarget) return;
     const next = clone(data);
@@ -1517,6 +1537,14 @@ export default function App() {
         {isAdmin && (
           <div className="toolbar">
             <button type="button" className="btn btn-gold" onClick={() => setBulkTarget('global')}><Upload size={15} /> Impor 640 Peserta</button>
+            <label className="pengawas-toggle">
+              <input
+                type="checkbox"
+                checked={!!(data.settings && data.settings.showPengawasToPublic)}
+                onChange={e => toggleShowPengawasToPublic(e.target.checked)}
+              />
+              Tampilkan nama pengawas ke publik
+            </label>
           </div>
         )}
 
@@ -1602,6 +1630,7 @@ export default function App() {
         <MirrorBracketStage
           room={activeRoom}
           canEdit={canEdit}
+          showPengawasText={isAdmin || (role === 'pengawas' && pengawasRoomId === activeRoom.id) || !!(data.settings && data.settings.showPengawasToPublic)}
           onPick={(ri, mi, winnerName) => handlePick(ri, mi, winnerName)}
           onOpenDetail={(ri, mi) => setDetailTarget({ scope: 'room', roomId: activeRoom.id, roundIdx: ri, matchIdx: mi })}
           onOpenPengawas={(ri, mi) => setPengawasTarget({ scope: 'room', roomId: activeRoom.id, roundIdx: ri, matchIdx: mi })}
