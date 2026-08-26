@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
-import { Trophy, Lock, Unlock, ChevronLeft, Upload, RotateCcw, X, Plus, Trash2, Shuffle, Loader2, Camera, FileSpreadsheet } from 'lucide-react';
+import { Trophy, Lock, Unlock, ChevronLeft, Upload, RotateCcw, X, Plus, Trash2, Shuffle, Camera, FileSpreadsheet, UserCog } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 const ROOM_COUNT = 10;
@@ -82,7 +82,7 @@ function buildRoundsFromParticipants(participants) {
   const rounds = [];
   const round0 = [];
   for (let i = 0; i < participants.length; i += 2) {
-    round0.push({ p1: participants[i], p2: participants[i + 1] || null, winner: null, photo: null, durationMinutes: null, violations: '', pengawasName: '' });
+    round0.push({ p1: participants[i], p2: participants[i + 1] || null, winner: null, photo: null, durationSeconds: null, violations: '', pengawasName: '' });
   }
   rounds.push(round0);
   let prevCount = round0.length;
@@ -90,7 +90,7 @@ function buildRoundsFromParticipants(participants) {
     const nextCount = prevCount / 2;
     const round = [];
     for (let i = 0; i < nextCount; i++) {
-      round.push({ p1: null, p2: null, winner: null, photo: null, durationMinutes: null, violations: '', pengawasName: '' });
+      round.push({ p1: null, p2: null, winner: null, photo: null, durationSeconds: null, violations: '', pengawasName: '' });
     }
     rounds.push(round);
     prevCount = nextCount;
@@ -142,6 +142,13 @@ function normalizeData(raw) {
   });
   const finalStage = raw.finalStage && Array.isArray(raw.finalStage.matches) ? raw.finalStage : { matches: [] };
   return { ...raw, rooms, finalStage };
+}
+
+function formatDuration(totalSeconds) {
+  if (totalSeconds == null) return '';
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 function getRoomChampion(room) {
@@ -204,7 +211,7 @@ function simulateRoom(room) {
 }
 
 function makeFinalMatch(round, p1, p2) {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, round, p1, p2, winner: null, photo: null, durationMinutes: null, violations: '', pengawasName: '' };
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, round, p1, p2, winner: null, photo: null, durationSeconds: null, violations: '', pengawasName: '' };
 }
 
 function getPengawasPin(session, roomNo) {
@@ -258,7 +265,7 @@ function groupRowsByRoom(rawRows) {
   return rooms;
 }
 
-function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationMinutes, violations }) {
+function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations }) {
   const playable = !!(p1 && p2) && !readOnly;
   const hasExtra = !!(photo || violations);
   return (
@@ -300,15 +307,16 @@ function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpen
           {p2 || 'Menunggu…'}
         </button>
       </div>
-      {durationMinutes != null && <div className="ticket-duration">⏱ {durationMinutes} menit</div>}
+      {durationSeconds != null && <div className="ticket-duration">⏱ {formatDuration(durationSeconds)}</div>}
     </div>
   );
 }
 
-function MatchDetailModal({ match, canEdit, canEditPengawas, onClose, onUploadPhoto, onSaveDetails, onResetMatch, title }) {
-  const [duration, setDuration] = useState(match.durationMinutes != null ? String(match.durationMinutes) : '');
+function MatchDetailModal({ match, canEdit, onClose, onUploadPhoto, onSaveDetails, onResetMatch, title }) {
+  const initialTotal = match.durationSeconds != null ? match.durationSeconds : null;
+  const [durMin, setDurMin] = useState(initialTotal != null ? Math.floor(initialTotal / 60) : '');
+  const [durSec, setDurSec] = useState(initialTotal != null ? initialTotal % 60 : '');
   const [violations, setViolations] = useState(match.violations || '');
-  const [pengawasName, setPengawasName] = useState(match.pengawasName || '');
   const [uploading, setUploading] = useState(false);
 
   async function handleFile(e) {
@@ -324,19 +332,14 @@ function MatchDetailModal({ match, canEdit, canEditPengawas, onClose, onUploadPh
   }
 
   function handleSave() {
-    onSaveDetails(duration === '' ? null : Number(duration), violations, pengawasName);
+    const total = (durMin === '' && durSec === '') ? null : (Number(durMin || 0) * 60 + Number(durSec || 0));
+    onSaveDetails(total, violations);
   }
 
   return (
     <Modal title={title} onClose={onClose} wide>
       {(match.p1 || match.p2) && (
         <p className="modal-matchup">{match.p1 || 'Menunggu…'} <span>vs</span> {match.p2 || 'Menunggu…'}</p>
-      )}
-      <label className="field-label">Nama Pengawas</label>
-      {canEditPengawas ? (
-        <input className="text-input" value={pengawasName} onChange={e => setPengawasName(e.target.value)} placeholder="Nama pengawas pertandingan ini" />
-      ) : (
-        <p className="modal-hint">{match.pengawasName ? match.pengawasName : 'Belum ditentukan (diisi admin)'}</p>
       )}
 
       <label className="field-label">Foto Hasil Pertandingan</label>
@@ -352,11 +355,20 @@ function MatchDetailModal({ match, canEdit, canEditPengawas, onClose, onUploadPh
         </label>
       )}
 
-      <label className="field-label">Durasi Permainan (menit)</label>
+      <label className="field-label">Durasi Permainan (maks. 10 menit)</label>
       {canEdit ? (
-        <input type="number" min="0" inputMode="numeric" className="text-input" value={duration} onChange={e => setDuration(e.target.value)} placeholder="contoh: 12" />
+        <div className="duration-picker">
+          <select className="text-input" value={durMin} onChange={e => setDurMin(e.target.value)}>
+            <option value="">mnt</option>
+            {Array.from({ length: 11 }, (_, i) => <option key={i} value={i}>{i} mnt</option>)}
+          </select>
+          <select className="text-input" value={durSec} onChange={e => setDurSec(e.target.value)}>
+            <option value="">dtk</option>
+            {Array.from({ length: 60 }, (_, i) => <option key={i} value={i}>{i} dtk</option>)}
+          </select>
+        </div>
       ) : (
-        <p className="modal-hint">{match.durationMinutes != null ? `${match.durationMinutes} menit` : 'Belum diisi'}</p>
+        <p className="modal-hint">{match.durationSeconds != null ? `${formatDuration(match.durationSeconds)} menit` : 'Belum diisi'}</p>
       )}
 
       <label className="field-label">Catatan Pelanggaran</label>
@@ -366,10 +378,29 @@ function MatchDetailModal({ match, canEdit, canEditPengawas, onClose, onUploadPh
         <p className="modal-hint">{match.violations ? match.violations : 'Tidak ada catatan'}</p>
       )}
 
-      {(canEdit || canEditPengawas) && <button type="button" className="btn btn-gold full" onClick={handleSave}>Simpan Detail</button>}
+      {canEdit && <button type="button" className="btn btn-gold full" onClick={handleSave}>Simpan Detail</button>}
       {canEdit && match.winner && onResetMatch && (
         <button type="button" className="btn btn-ghost full" onClick={onResetMatch}><RotateCcw size={13} /> Reset Hasil Pertandingan Ini</button>
       )}
+    </Modal>
+  );
+}
+
+function PengawasModal({ match, canEdit, onClose, onSave, title }) {
+  const [name, setName] = useState(match.pengawasName || '');
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      {(match.p1 || match.p2) && (
+        <p className="modal-matchup">{match.p1 || 'Menunggu…'} <span>vs</span> {match.p2 || 'Menunggu…'}</p>
+      )}
+      <label className="field-label">Nama Pengawas</label>
+      {canEdit ? (
+        <input className="text-input" value={name} onChange={e => setName(e.target.value)} placeholder="Nama pengawas pertandingan ini" autoFocus />
+      ) : (
+        <p className="modal-hint">{match.pengawasName ? match.pengawasName : 'Belum ditentukan'}</p>
+      )}
+      {canEdit && <button type="button" className="btn btn-gold full" onClick={() => onSave(name.trim())}>Simpan</button>}
     </Modal>
   );
 }
@@ -397,11 +428,17 @@ function RoomCard({ room, onOpen }) {
   );
 }
 
-function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, readOnly, showDetail, photo, durationMinutes, violations, onOpenDetail, center }) {
+function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, readOnly, showDetail, photo, durationSeconds, violations, onOpenDetail, onOpenPengawas, center }) {
   const playable = !!(p1 && p2) && !readOnly;
-  const hasExtra = !!(photo || violations || pengawasName);
+  const hasExtra = !!(photo || violations);
+  const isChampion = center && !!winner;
   return (
-    <div className={'sbox' + (center ? ' sbox-center' : '') + (center && winner ? ' sbox-champion' : '')}>
+    <div className={'sbox' + (center ? ' sbox-center' : '') + (isChampion ? ' sbox-champion' : '')}>
+      {isChampion && (
+        <div className="confetti" aria-hidden="true">
+          {Array.from({ length: 8 }, (_, i) => <span key={i} />)}
+        </div>
+      )}
       <button
         type="button"
         className={'sbox-row' + (winner && winner === p1 ? ' win' : '') + (winner && winner !== p1 ? ' lose' : '')}
@@ -421,11 +458,18 @@ function StageBox({ p1, p2, winner, school1, school2, pengawasName, onPick, read
         <span className={'sbox-school' + (school2 ? '' : ' placeholder')}>{school2 || 'Nama Sekolah'}</span>
       </button>
       {showDetail && (
-        <button type="button" className={'sbox-detail' + (hasExtra ? ' has-data' : '')} onClick={onOpenDetail} aria-label="Detail pertandingan">
-          <Camera size={center ? 13 : 9} />
-        </button>
+        <div className="sbox-icons">
+          {onOpenPengawas && (
+            <button type="button" className={'sbox-detail' + (pengawasName ? ' has-data' : '')} onClick={onOpenPengawas} aria-label="Nama pengawas">
+              <UserCog size={center ? 13 : 9} />
+            </button>
+          )}
+          <button type="button" className={'sbox-detail' + (hasExtra ? ' has-data' : '')} onClick={onOpenDetail} aria-label="Detail pertandingan">
+            <Camera size={center ? 13 : 9} />
+          </button>
+        </div>
       )}
-      {showDetail && durationMinutes != null && <span className="sbox-duration">{durationMinutes}m</span>}
+      {showDetail && durationSeconds != null && <span className="sbox-duration">{formatDuration(durationSeconds)}</span>}
     </div>
   );
 }
@@ -457,7 +501,7 @@ function ScaledStage({ baseWidth, baseHeight, children }) {
   );
 }
 
-function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail }) {
+function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail, onOpenPengawas }) {
   const { matchCols, connectors } = STAGE_LAYOUT;
   const schools = room.schools || {};
 
@@ -505,12 +549,13 @@ function MirrorBracketStage({ room, canEdit, onPick, onOpenDetail }) {
                   winner={m.winner}
                   showDetail={canEdit}
                   photo={m.photo}
-                  durationMinutes={m.durationMinutes}
+                  durationSeconds={m.durationSeconds}
                   violations={m.violations}
                   readOnly={!canEdit}
                   center={col.side === 'center'}
                   onPick={name => onPick(col.roundIdx, absoluteIdx, name)}
                   onOpenDetail={() => onOpenDetail(col.roundIdx, absoluteIdx)}
+                  onOpenPengawas={onOpenPengawas ? () => onOpenPengawas(col.roundIdx, absoluteIdx) : undefined}
                 />
               </div>
             );
@@ -599,7 +644,21 @@ function GlobalStyle() {
         animation: badge-shimmer 3s ease-in-out infinite;
       }
       @keyframes badge-shimmer { 0%, 100% { box-shadow: 0 0 0 rgba(194,142,18,0); } 50% { box-shadow: 0 0 18px rgba(194,142,18,0.4); } }
-      .landing-title { font-family: 'Bungee', cursive; font-weight: 400; font-size: 34px; color: #2B2013; margin: 0; line-height: 1.25; }
+      .bunting { display: flex; justify-content: center; gap: 6px; margin-bottom: 4px; }
+      .bunting span {
+        width: 0; height: 0; border-left: 9px solid transparent; border-right: 9px solid transparent;
+        border-top: 15px solid #C28E12; animation: bunting-sway 3s ease-in-out infinite;
+        transform-origin: top center;
+      }
+      .bunting span:nth-child(3n+2) { border-top-color: #D6293F; animation-delay: 0.2s; }
+      .bunting span:nth-child(3n) { border-top-color: #2B2013; animation-delay: 0.4s; }
+      .bunting span:nth-child(2n) { animation-delay: 0.6s; }
+      @keyframes bunting-sway { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+      .landing-title { font-family: 'Bungee', cursive; font-weight: 400; font-size: 34px; color: #2B2013; margin: 0; line-height: 1.25; position: relative; display: inline-block; }
+      .sparkle { position: absolute; font-size: 18px; color: #C28E12; animation: sparkle-twinkle 2s ease-in-out infinite; }
+      .sparkle-1 { top: -6px; right: -22px; animation-delay: 0s; }
+      .sparkle-2 { bottom: -2px; left: -24px; font-size: 13px; animation-delay: 0.7s; }
+      @keyframes sparkle-twinkle { 0%, 100% { opacity: 0.3; transform: scale(0.8) rotate(0deg); } 50% { opacity: 1; transform: scale(1.15) rotate(20deg); } }
       .landing-sub { color: #8D8371; font-size: 14px; margin: 0; max-width: 460px; }
       .landing-credit { color: #A69C89; font-size: 11px; margin: 4px 0 0; letter-spacing: 0.02em; }
       .landing-options { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
@@ -608,7 +667,7 @@ function GlobalStyle() {
         background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 18px; padding: 28px 22px; color: #2B2013;
         font-family: inherit; cursor: pointer; transition: transform .2s, border-color .2s, box-shadow .2s;
       }
-      .landing-card:hover { transform: translateY(-4px); border-color: #C28E12; box-shadow: 0 12px 30px rgba(194,142,18,0.18); }
+      .landing-card:hover { transform: translateY(-4px) scale(1.02); border-color: #C28E12; box-shadow: 0 12px 30px rgba(194,142,18,0.18); }
       .landing-card svg { color: #C28E12; }
       .landing-card h3 { margin: 0; font-size: 16px; font-family: 'Bungee', cursive; font-weight: 400; }
       .landing-card p { margin: 0; font-size: 12px; color: #8D8371; line-height: 1.5; }
@@ -642,7 +701,7 @@ function GlobalStyle() {
         background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 18px; padding: 26px 16px;
         cursor: pointer; font-family: inherit; transition: transform .15s, border-color .15s, box-shadow .15s;
       }
-      .session-card:hover { transform: translateY(-3px); border-color: #C28E12; box-shadow: 0 10px 26px rgba(194,142,18,0.16); }
+      .session-card:hover { transform: translateY(-3px) scale(1.02); border-color: #C28E12; box-shadow: 0 10px 26px rgba(194,142,18,0.16); }
       .session-card-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #A69C89; font-weight: 700; }
       .session-card-number { font-family: 'Bungee', cursive; font-size: 40px; color: #C28E12; line-height: 1.1; }
       .session-card-sub { font-size: 11px; color: #8D8371; margin-top: 4px; }
@@ -652,7 +711,7 @@ function GlobalStyle() {
         border-radius: 14px; padding: 14px; cursor: pointer; font-family: inherit; color: #2B2013;
         display: flex; flex-direction: column; gap: 8px; transition: border-color .15s, transform .15s;
       }
-      .room-card:hover { border-color: #C28E12; transform: translateY(-2px); }
+      .room-card:hover { border-color: #C28E12; transform: translateY(-2px) scale(1.02); }
       .room-card-top { display: flex; justify-content: space-between; align-items: center; }
       .room-number { font-family: 'Bungee', cursive; font-size: 20px; color: #C28E12; font-weight: 400; }
       .session-badge { font-size: 10px; color: #8D8371; border: 1px solid #E9DCC0; padding: 2px 8px; border-radius: 999px; }
@@ -724,25 +783,45 @@ function GlobalStyle() {
       .sbox-row.win { background: rgba(194,142,18,0.14); }
       .sbox-row.lose { opacity: 0.4; }
       .sbox-row.lose .sbox-name { text-decoration: line-through; }
-      .sbox-detail { position: absolute; top: 3px; right: 3px; background: none; border: none; color: #ACA28D; cursor: pointer; padding: 1px; line-height: 0; }
+      .sbox-icons { position: absolute; top: 3px; right: 3px; display: flex; align-items: center; gap: 5px; }
+      .sbox-detail { background: none; border: none; color: #ACA28D; cursor: pointer; padding: 1px; line-height: 0; }
       .sbox-detail.has-data { color: #A6790E; }
       .sbox-duration { position: absolute; bottom: 2px; right: 4px; font-size: 8px; color: #ACA28D; }
       .sbox-center { border-color: #D9BE7E; border-width: 2px; }
       .sbox-center .sbox-name { font-size: 22px; }
       .sbox-center .sbox-school { font-size: 14px; }
       .sbox-center .sbox-row { padding: 8px 30px 8px 14px; }
-      .sbox-center .sbox-detail { top: 8px; right: 8px; }
+      .sbox-center .sbox-icons { top: 8px; right: 8px; gap: 8px; }
       .sbox-champion { animation: champion-glow 2.2s ease-in-out infinite; }
       @keyframes champion-glow {
         0%, 100% { box-shadow: 0 0 14px rgba(194,142,18,0.4); }
         50% { box-shadow: 0 0 32px rgba(194,142,18,0.8); }
       }
+      .confetti { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: inherit; z-index: 1; }
+      .confetti span { position: absolute; top: -12px; width: 5px; height: 9px; opacity: 0; animation: confetti-fall 2.8s ease-in infinite; }
+      .confetti span:nth-child(1) { left: 6%; background: #C28E12; animation-delay: 0s; }
+      .confetti span:nth-child(2) { left: 18%; background: #D6293F; animation-delay: 0.35s; }
+      .confetti span:nth-child(3) { left: 30%; background: #FFFFFF; animation-delay: 0.7s; border: 1px solid #E9DCC0; }
+      .confetti span:nth-child(4) { left: 44%; background: #C28E12; animation-delay: 1.05s; }
+      .confetti span:nth-child(5) { left: 58%; background: #D6293F; animation-delay: 0.2s; }
+      .confetti span:nth-child(6) { left: 70%; background: #FFFFFF; animation-delay: 0.55s; border: 1px solid #E9DCC0; }
+      .confetti span:nth-child(7) { left: 84%; background: #C28E12; animation-delay: 0.9s; }
+      .confetti span:nth-child(8) { left: 94%; background: #D6293F; animation-delay: 1.25s; }
+      @keyframes confetti-fall {
+        0% { transform: translateY(-12px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(160px) rotate(340deg); opacity: 0; }
+      }
       .modal-matchup { text-align: center; font-size: 13px; font-weight: 700; color: #2B2013; margin: 0 0 6px; }
       .modal-matchup span { color: #A6790E; font-weight: 600; margin: 0 6px; font-size: 11px; }
-      .participant-manage-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; padding-right: 2px; }
-      .participant-row { display: flex; align-items: center; gap: 8px; }
-      .p-row-no { flex-shrink: 0; width: 24px; text-align: center; font-size: 11px; color: #A69C89; font-weight: 700; }
-      .participant-row .text-input { padding: 8px 10px; font-size: 12px; }
+      .match-manage-list { display: flex; flex-direction: column; gap: 12px; max-height: 65vh; overflow-y: auto; padding-right: 2px; }
+      .match-manage-card {
+        background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 12px; padding: 12px;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .match-manage-title { font-size: 11px; font-weight: 700; color: #A6790E; text-transform: uppercase; letter-spacing: 0.03em; }
+      .match-manage-pair { display: flex; gap: 8px; }
+      .match-manage-pair .text-input { padding: 8px 10px; font-size: 12px; }
+      .match-manage-vs { text-align: center; font-size: 10px; color: #A69C89; font-weight: 700; }
       .match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
       .ticket {
         position: relative; background: #FFFFFF; border: 1px solid #E9DCC0;
@@ -818,6 +897,9 @@ function GlobalStyle() {
       .text-input:focus, .text-area:focus { outline: none; border-color: #C28E12; }
       .error-text { color: #D6455C; font-size: 12px; margin: 0; }
       .field-label { font-size: 11px; color: #8D8371; font-weight: 600; margin-top: 4px; }
+      .duration-picker { display: flex; gap: 8px; }
+      .duration-picker select { flex: 1; }
+      .pengawas-name-input { width: 180px; }
       .round-quick { display: flex; gap: 6px; }
       .chip-btn {
         background: #FFFFFF; border: 1px solid #E9DCC0; color: #2B2013;
@@ -830,6 +912,8 @@ function GlobalStyle() {
         min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
         gap: 10px; color: #8D8371; font-size: 13px;
       }
+      .loading-mark { font-size: 36px; animation: loading-bounce 1s ease-in-out infinite; }
+      @keyframes loading-bounce { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-8px) scale(1.08); } }
       .spin { animation: lrp-spin 1s linear infinite; }
       @keyframes lrp-spin { to { transform: rotate(360deg); } }
       @media (max-width: 480px) {
@@ -857,16 +941,19 @@ export default function App() {
 
   const [role, setRole] = useState('public'); // 'public' | 'pengawas' | 'admin'
   const [pengawasRoomId, setPengawasRoomId] = useState(null);
-  const [pin, setPin] = useState('');
-  const [pinError, setPinError] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
   const sessionRestoreAttempted = useRef(false);
 
   const [detailTarget, setDetailTarget] = useState(null); // { scope: 'room', roomId, roundIdx, matchIdx } | { scope: 'final', matchId }
+  const [pengawasTarget, setPengawasTarget] = useState(null); // same shape as detailTarget
 
   const [bulkTarget, setBulkTarget] = useState(null);
   const [draftParticipants, setDraftParticipants] = useState(null);
+  const [draftPengawasNames, setDraftPengawasNames] = useState(null);
   const [bulkText, setBulkText] = useState('');
   const [importFileRows, setImportFileRows] = useState(null);
   const [importFileError, setImportFileError] = useState('');
@@ -977,7 +1064,7 @@ export default function App() {
     return (
       <div className="lrp-app">
         <GlobalStyle />
-        <div className="loading-state"><Loader2 className="spin" size={26} /><span>Memuat data turnamen…</span></div>
+        <div className="loading-state"><span className="loading-mark">🎪</span><span>Memuat data turnamen…</span></div>
       </div>
     );
   }
@@ -1030,24 +1117,18 @@ export default function App() {
     persist(next);
   }
 
-  async function checkPin() {
-    const trimmed = pin.trim();
-    let email = null;
-    if (trimmed === ADMIN_PIN) {
-      email = 'admin@lrp2026.internal';
-    } else {
-      const match = trimmed.match(/^s(\d{1,2})r(\d{1,2})-2026$/i);
-      if (match) email = `s${match[1]}r${match[2]}@lrp2026.internal`;
-    }
-    if (!email) {
-      setPinError(true);
+  async function handleLogin() {
+    const email = loginEmail.trim();
+    const password = loginPassword;
+    if (!email || !password) {
+      setLoginError(true);
       return;
     }
     setAuthLoading(true);
-    const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password: trimmed });
+    const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password });
     setAuthLoading(false);
     if (error || !signInData || !signInData.session) {
-      setPinError(true);
+      setLoginError(true);
       return;
     }
     const meta = signInData.session.user.app_metadata || {};
@@ -1058,7 +1139,7 @@ export default function App() {
     } else if (meta.role === 'pengawas') {
       const target = data.rooms.find(r => r.session === meta.session && r.roomNo === meta.roomNo);
       if (!target) {
-        setPinError(true);
+        setLoginError(true);
         await supabase.auth.signOut();
         return;
       }
@@ -1067,16 +1148,17 @@ export default function App() {
       setActiveRoomId(target.id);
       setView('room');
     } else {
-      setPinError(true);
+      setLoginError(true);
       await supabase.auth.signOut();
       return;
     }
-    setPin('');
-    setPinError(false);
+    setLoginEmail('');
+    setLoginPassword('');
+    setLoginError(false);
   }
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: 'local' });
     setRole('public');
     setPengawasRoomId(null);
     setView('landing');
@@ -1089,6 +1171,15 @@ export default function App() {
       return room ? room.rounds[detailTarget.roundIdx][detailTarget.matchIdx] : null;
     }
     return data.finalStage.matches.find(m => m.id === detailTarget.matchId) || null;
+  }
+
+  function getPengawasMatch() {
+    if (!pengawasTarget) return null;
+    if (pengawasTarget.scope === 'room') {
+      const room = data.rooms.find(r => r.id === pengawasTarget.roomId);
+      return room ? room.rounds[pengawasTarget.roundIdx][pengawasTarget.matchIdx] : null;
+    }
+    return data.finalStage.matches.find(m => m.id === pengawasTarget.matchId) || null;
   }
 
   function detailCanEdit() {
@@ -1119,7 +1210,7 @@ export default function App() {
     }
   }
 
-  function handleSaveDetails(durationMinutes, violations, pengawasName) {
+  function handleSaveDetails(durationSeconds, violations) {
     if (!detailTarget) return;
     const next = clone(data);
     let match;
@@ -1129,9 +1220,8 @@ export default function App() {
     } else {
       match = next.finalStage.matches.find(mm => mm.id === detailTarget.matchId);
     }
-    match.durationMinutes = durationMinutes;
+    match.durationSeconds = durationSeconds;
     match.violations = violations;
-    match.pengawasName = pengawasName || '';
     persist(next);
     setDetailTarget(null);
   }
@@ -1288,6 +1378,7 @@ export default function App() {
   function openManageParticipants() {
     if (!activeRoom) return;
     setDraftParticipants(activeRoom.participants.map(n => ({ name: n, school: (activeRoom.schools && activeRoom.schools[n]) || '' })));
+    setDraftPengawasNames(activeRoom.rounds[0].map(m => m.pengawasName || ''));
     setView('manage');
   }
 
@@ -1311,8 +1402,14 @@ export default function App() {
       if (p.school && p.school.trim()) newSchools[newName] = p.school.trim();
     });
     room.schools = newSchools;
+    if (draftPengawasNames) {
+      draftPengawasNames.forEach((name, i) => {
+        if (room.rounds[0][i]) room.rounds[0][i].pengawasName = (name || '').trim();
+      });
+    }
     persist(next);
     setDraftParticipants(null);
+    setDraftPengawasNames(null);
     setView('room');
   }
 
@@ -1323,12 +1420,30 @@ export default function App() {
     persist(next);
   }
 
+  function savePengawasName(name) {
+    if (!pengawasTarget) return;
+    const next = clone(data);
+    let match;
+    if (pengawasTarget.scope === 'room') {
+      const room = next.rooms.find(r => r.id === pengawasTarget.roomId);
+      match = room.rounds[pengawasTarget.roundIdx][pengawasTarget.matchIdx];
+    } else {
+      match = next.finalStage.matches.find(mm => mm.id === pengawasTarget.matchId);
+    }
+    match.pengawasName = name;
+    persist(next);
+    setPengawasTarget(null);
+  }
+
   function renderLanding() {
     return (
       <div className="view landing">
+        <div className="bunting" aria-hidden="true">
+          {Array.from({ length: 9 }, (_, i) => <span key={i} />)}
+        </div>
         <div className="landing-hero">
           <div className="landing-badge">🎪 MCR &amp; LRP 2026</div>
-          <h1 className="landing-title">Selamat Datang di LRP 2026</h1>
+          <h1 className="landing-title">Selamat Datang di LRP 2026<span className="sparkle sparkle-1">✦</span><span className="sparkle sparkle-2">✦</span></h1>
           <p className="landing-sub">640 peserta &middot; 10 ruangan &middot; 4 sesi &middot; satu panggung juara</p>
           <p className="landing-credit">HIMAPSTIKA &amp; HIMADIKMA · Universitas Negeri Surabaya</p>
         </div>
@@ -1355,18 +1470,32 @@ export default function App() {
         <div className="login-card">
           <Lock size={26} />
           <h2>Login Panitia</h2>
-          <p className="modal-hint">Admin: masukkan PIN admin. Pengawas: masukkan kode ruangan (format r1-2026, r2-2026, dst).</p>
+          <p className="modal-hint">
+            Admin: <strong>admin@lrp2026.internal</strong>, password <strong>lrp2026</strong>.<br />
+            Pengawas: <strong>s{'{sesi}'}r{'{ruangan}'}@lrp2026.internal</strong>, contoh <strong>s1r1@lrp2026.internal</strong> untuk Sesi 1 Ruangan 1 — password sama dengan kode ruangannya (<strong>s1r1-2026</strong>).<br />
+            Ini persis akun yang dibuat lewat <code>setup-auth-users.mjs</code>.
+          </p>
           <input
-            type="password"
-            value={pin}
-            onChange={e => { setPin(e.target.value); setPinError(false); }}
-            onKeyDown={e => e.key === 'Enter' && checkPin()}
+            type="email"
+            value={loginEmail}
+            onChange={e => { setLoginEmail(e.target.value); setLoginError(false); }}
+            onKeyDown={e => e.key === 'Enter' && handleLogin()}
             className="text-input"
-            placeholder="PIN admin / kode ruangan"
+            placeholder="Email"
             autoFocus
           />
-          {pinError && <p className="error-text">Kode salah, coba lagi.</p>}
-          <button type="button" className="btn btn-gold full" onClick={checkPin}>Masuk</button>
+          <input
+            type="password"
+            value={loginPassword}
+            onChange={e => { setLoginPassword(e.target.value); setLoginError(false); }}
+            onKeyDown={e => e.key === 'Enter' && handleLogin()}
+            className="text-input"
+            placeholder="Password"
+          />
+          {loginError && <p className="error-text">Email atau password salah, coba lagi.</p>}
+          <button type="button" className="btn btn-gold full" onClick={handleLogin} disabled={authLoading}>
+            {authLoading ? 'Memeriksa…' : 'Masuk'}
+          </button>
         </div>
       </div>
     );
@@ -1448,7 +1577,10 @@ export default function App() {
         <div className="room-header">
           <div>
             <h2>{activeRoom.name}</h2>
-            <p>Sesi {activeRoom.session} &middot; 64 peserta{role === 'pengawas' && pengawasRoomId === activeRoom.id ? ' · kamu masuk sebagai pengawas ruangan ini' : ''}</p>
+            <p>
+              Sesi {activeRoom.session} &middot; 64 peserta
+              {role === 'pengawas' && pengawasRoomId === activeRoom.id ? ' · kamu masuk sebagai pengawas ruangan ini' : ''}
+            </p>
           </div>
           {isAdmin && (
             <div className="room-header-actions">
@@ -1472,44 +1604,76 @@ export default function App() {
           canEdit={canEdit}
           onPick={(ri, mi, winnerName) => handlePick(ri, mi, winnerName)}
           onOpenDetail={(ri, mi) => setDetailTarget({ scope: 'room', roomId: activeRoom.id, roundIdx: ri, matchIdx: mi })}
+          onOpenPengawas={(ri, mi) => setPengawasTarget({ scope: 'room', roomId: activeRoom.id, roundIdx: ri, matchIdx: mi })}
         />
       </div>
     );
   }
 
   function renderManage() {
-    if (!activeRoom || !draftParticipants) return null;
+    if (!activeRoom || !draftParticipants || !draftPengawasNames) return null;
     function updateDraft(i, field, value) {
       setDraftParticipants(prev => prev.map((p, idx) => (idx === i ? { ...p, [field]: value } : p)));
     }
+    function updatePengawasDraft(i, value) {
+      setDraftPengawasNames(prev => prev.map((n, idx) => (idx === i ? value : n)));
+    }
     return (
       <div className="view">
-        <button type="button" className="back-btn" onClick={() => { setDraftParticipants(null); setView('room'); }}><ChevronLeft size={16} /> Batal, Kembali</button>
+        <button type="button" className="back-btn" onClick={() => { setDraftParticipants(null); setDraftPengawasNames(null); setView('room'); }}><ChevronLeft size={16} /> Batal, Kembali</button>
         <div className="room-header">
           <div>
             <h2>Kelola Peserta</h2>
-            <p>{activeRoom.name} &middot; Sesi {activeRoom.session} &middot; isi satu per satu, atau pakai impor massal</p>
+            <p>{activeRoom.name} &middot; Sesi {activeRoom.session} &middot; isi peserta &amp; pengawas per pertandingan, atau pakai impor massal</p>
           </div>
           <button type="button" className="btn btn-ghost sm" onClick={() => setBulkTarget(activeRoom.id)}><Upload size={13} /> Impor Massal</button>
         </div>
-        <div className="participant-manage-list">
-          {draftParticipants.map((p, i) => (
-            <div key={i} className="participant-row">
-              <span className="p-row-no">{i + 1}</span>
-              <input
-                className="text-input"
-                value={p.name}
-                onChange={e => updateDraft(i, 'name', e.target.value)}
-                placeholder={`Nama peserta ${i + 1}`}
-              />
-              <input
-                className="text-input"
-                value={p.school}
-                onChange={e => updateDraft(i, 'school', e.target.value)}
-                placeholder="Nama sekolah"
-              />
-            </div>
-          ))}
+        <div className="match-manage-list">
+          {Array.from({ length: 32 }, (_, i) => {
+            const p1 = draftParticipants[i * 2];
+            const p2 = draftParticipants[i * 2 + 1];
+            return (
+              <div key={i} className="match-manage-card">
+                <div className="match-manage-title">Pertandingan {i + 1}</div>
+                <div className="match-manage-pair">
+                  <input
+                    className="text-input"
+                    value={p1.name}
+                    onChange={e => updateDraft(i * 2, 'name', e.target.value)}
+                    placeholder={`Nama peserta ${i * 2 + 1}`}
+                  />
+                  <input
+                    className="text-input"
+                    value={p1.school}
+                    onChange={e => updateDraft(i * 2, 'school', e.target.value)}
+                    placeholder="Nama sekolah"
+                  />
+                </div>
+                <div className="match-manage-vs">vs</div>
+                <div className="match-manage-pair">
+                  <input
+                    className="text-input"
+                    value={p2.name}
+                    onChange={e => updateDraft(i * 2 + 1, 'name', e.target.value)}
+                    placeholder={`Nama peserta ${i * 2 + 2}`}
+                  />
+                  <input
+                    className="text-input"
+                    value={p2.school}
+                    onChange={e => updateDraft(i * 2 + 1, 'school', e.target.value)}
+                    placeholder="Nama sekolah"
+                  />
+                </div>
+                <label className="field-label">Nama Pengawas Pertandingan Ini</label>
+                <input
+                  className="text-input"
+                  value={draftPengawasNames[i]}
+                  onChange={e => updatePengawasDraft(i, e.target.value)}
+                  placeholder="Nama pengawas"
+                />
+              </div>
+            );
+          })}
         </div>
         <button type="button" className="btn btn-gold full" onClick={saveManageChanges}>Simpan Semua Perubahan</button>
       </div>
@@ -1563,7 +1727,7 @@ export default function App() {
                 readOnly={!isAdmin}
                 label={m.round}
                 photo={m.photo}
-                durationMinutes={m.durationMinutes}
+                durationSeconds={m.durationSeconds}
                 violations={m.violations}
                 onDelete={isAdmin ? () => deleteFinalMatch(m.id) : undefined}
                 onPick={winnerName => pickFinalWinner(m.id, winnerName)}
@@ -1620,7 +1784,6 @@ export default function App() {
         <MatchDetailModal
           match={getDetailMatch()}
           canEdit={detailCanEdit()}
-          canEditPengawas={isAdmin}
           title={detailTarget.scope === 'room' ? `Detail Pertandingan — ${(data.rooms.find(r => r.id === detailTarget.roomId) || {}).name || ''} (Sesi ${(data.rooms.find(r => r.id === detailTarget.roomId) || {}).session || ''})` : 'Detail Pertandingan — Babak Lanjutan'}
           onClose={() => setDetailTarget(null)}
           onUploadPhoto={handleUploadPhoto}
@@ -1628,6 +1791,16 @@ export default function App() {
           onResetMatch={detailTarget.scope === 'room'
             ? () => requestResetMatch('room', detailTarget.roomId, detailTarget.roundIdx, detailTarget.matchIdx)
             : () => requestResetMatch('final', null, null, null, detailTarget.matchId)}
+        />
+      )}
+
+      {pengawasTarget && getPengawasMatch() && (
+        <PengawasModal
+          match={getPengawasMatch()}
+          canEdit={isAdmin}
+          title={pengawasTarget.scope === 'room' ? `Nama Pengawas — ${(data.rooms.find(r => r.id === pengawasTarget.roomId) || {}).name || ''} (Sesi ${(data.rooms.find(r => r.id === pengawasTarget.roomId) || {}).session || ''})` : 'Nama Pengawas — Babak Lanjutan'}
+          onClose={() => setPengawasTarget(null)}
+          onSave={savePengawasName}
         />
       )}
 

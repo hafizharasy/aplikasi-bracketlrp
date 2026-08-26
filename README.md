@@ -129,7 +129,7 @@ Data tersimpan sebagai satu baris JSON, jadi kalau dua admin nulis hasil di deti
 Ini perubahan yang lebih besar dari update-update sebelumnya, jadi dibaca pelan-pelan ya. Yang berubah secara arsitektur:
 
 - Tabel `tournament_state` sekarang **tidak bisa ditulis langsung** oleh siapa pun dari browser, sekalipun sudah login. Satu-satunya jalan menulis adalah lewat **Edge Function** (`update-match`) yang jalan di server Supabase.
-- Login sekarang pakai **akun Supabase Auth beneran** (bukan lagi PIN yang cuma dicek di JavaScript), tapi **kode yang diketik pengguna tetap sama persis** seperti sebelumnya (`lrp2026` untuk admin, `s1r1-2026` dst untuk pengawas) — jadi tidak ada yang perlu diajarkan ulang ke panitia.
+- Login sekarang pakai **akun Supabase Auth beneran** lewat form **email + password** terpisah — bukan lagi satu kode yang "disamarkan" jadi email di baliknya. Kredensialnya persis sama dengan yang dibuat lewat `scripts/setup-auth-users.mjs`: admin pakai `admin@lrp2026.internal` / `lrp2026`, pengawas pakai `s{sesi}r{ruangan}@lrp2026.internal` / `s{sesi}r{ruangan}-2026` (contoh `s1r1@lrp2026.internal` / `s1r1-2026` untuk Sesi 1 Ruangan 1). Halaman login menampilkan pola ini langsung supaya jelas.
 - Edge Function itu memeriksa identitas si pemanggil dari sesi login-nya, dan khusus untuk pengawas, **memastikan perubahan yang dikirim cuma menyentuh ruangan miliknya sendiri** — dicoba tulis ke ruangan lain akan ditolak, bukan cuma disembunyikan di tampilan. Logika pemeriksaan ini sudah aku uji terpisah dengan 8 skenario (termasuk skenario "pengawas nyoba nyelundupin perubahan ke ruangan lain") sebelum ditulis ke Edge Function-nya.
 - Bonus: karena sekarang pakai sesi login beneran, admin/pengawas **tidak perlu login ulang setiap refresh halaman** — sesinya tersimpan otomatis oleh Supabase.
 
@@ -171,5 +171,16 @@ Jalankan lagi `scripts/setup-auth-users.mjs` — script ini aman dijalankan berk
 ### Kalau ada yang gagal simpan
 
 Sekarang kalau penyimpanan gagal (misalnya sesi kadaluarsa, atau — seharusnya tidak terjadi lewat aplikasi normal — ada percobaan menulis ke ruangan yang bukan miliknya), muncul badge merah kecil di header aplikasi menjelaskan alasannya, dan perubahan yang gagal otomatis dibatalkan di tampilan (tidak diam-diam hilang tanpa pemberitahuan seperti sebelumnya).
+
+## Revisi: nama pengawas per pertandingan, durasi menit:detik, Kelola Peserta berpasangan
+
+- **Nama pengawas tetap per pertandingan** (bukan satu untuk seluruh ruangan) — cocok untuk ruangan yang punya beberapa pengawas berbeda mengawasi meja/pertandingan berbeda secara bersamaan. Input-nya sengaja dipisah dari modal detail pertandingan (foto/durasi/pelanggaran):
+  - Ikon baru (terpisah dari ikon kamera) di tiap kotak bracket membuka modal ringan khusus nama pengawas.
+  - Atau, lebih praktis: lewat **Kelola Peserta**, yang sekarang menampilkan 32 kartu pertandingan (bukan 64 baris peserta terpisah) — tiap kartu berisi kedua peserta yang akan bertanding **dan** nama pengawas untuk pertandingan itu, diisi bersamaan dalam satu layar.
+  - Tetap admin-only untuk mengisi/mengubah, baik lewat ikon di bracket maupun lewat Kelola Peserta — pengawas ruangan cuma bisa melihat, tidak bisa mengubah punya sendiri.
+- **Durasi pertandingan** diisi lewat dua dropdown — menit (0-10) dan detik (0-59) — supaya presisi sampai hitungan detik. Ditampilkan di bracket dan modal detail dalam format `menit:detik`.
+- **Edge Function `update-match` diperbarui** untuk menegakkan aturan "pengawasName admin-only" ini juga di level server, per pertandingan — pengawas ruangan tetap bisa mengubah hasil/durasi/catatan pelanggaran pertandingan di ruangannya sendiri, tapi percobaan mengubah `pengawasName` lewat jalur API langsung akan ditolak. **Perlu deploy ulang** (`supabase functions deploy update-match`) supaya versi terbaru ini aktif di server — logika penolakannya sudah diuji terpisah dengan 5 skenario (termasuk percobaan mengganti nama pengawas yang sudah ada) sebelum ditulis ke function-nya.
+
+
 
 

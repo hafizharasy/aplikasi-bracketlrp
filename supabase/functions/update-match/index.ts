@@ -62,6 +62,27 @@ function validateWrite(currentData, newData, callerRole, callerSession, callerRo
     }
   }
 
+  // pengawasName is recorded per match, but stays admin-only to set — even the
+  // room's own pengawas may not change it (they may still change winner, photo,
+  // durationSeconds, and violations on their own matches).
+  if (!oldRoom.rounds || !newRoom.rounds || oldRoom.rounds.length !== newRoom.rounds.length) {
+    return { ok: false, error: 'Forbidden: rounds shape changed' };
+  }
+  for (let r = 0; r < oldRoom.rounds.length; r++) {
+    const oldRound = oldRoom.rounds[r];
+    const newRound = newRoom.rounds[r];
+    if (!newRound || oldRound.length !== newRound.length) {
+      return { ok: false, error: 'Forbidden: rounds shape changed' };
+    }
+    for (let m = 0; m < oldRound.length; m++) {
+      const oldPengawas = oldRound[m] ? oldRound[m].pengawasName || '' : '';
+      const newPengawas = newRound[m] ? newRound[m].pengawasName || '' : '';
+      if (oldPengawas !== newPengawas) {
+        return { ok: false, error: 'Forbidden: pengawasName is admin-only' };
+      }
+    }
+  }
+
   return { ok: true };
 }
 
