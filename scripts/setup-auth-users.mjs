@@ -1,11 +1,21 @@
-// One-time setup script: creates the 11 real Supabase Auth accounts
-// (1 admin + 10 pengawas, one per room) with the role/session/roomNo
-// metadata the Edge Function and RLS policies rely on.
+// One-time (or re-run-anytime) setup script: creates real Supabase Auth
+// accounts — 1 admin + 1 pengawas per room that currently exists in your
+// tournament data — with the role/session/roomNo metadata the Edge
+// Function and RLS policies rely on.
 //
-// Run this ONCE, locally, from your own computer — never deploy it,
-// never commit it with real keys filled in, and never run it in a
-// browser. It needs your Supabase SERVICE ROLE key, which can bypass
-// all security rules, so treat it like a password.
+// Because rooms are now created dynamically by admin inside the app
+// (Sesi > Tambah Ruangan) rather than fixed in advance, this script reads
+// your LIVE room list straight from Supabase instead of assuming a fixed
+// count — so it always matches whatever structure admin has actually set
+// up, whenever they finish setting it up (e.g. closer to the event day).
+// Safe to re-run any time the room structure changes: it only touches
+// pengawas accounts for rooms that currently exist, and leaves everything
+// else alone.
+//
+// Run this ONCE per change, locally, from your own computer — never
+// deploy it, never commit it with real keys filled in, and never run it
+// in a browser. It needs your Supabase SERVICE ROLE key, which can
+// bypass all security rules, so treat it like a password.
 //
 // Usage:
 //   1. npm install @supabase/supabase-js  (if not already installed)
@@ -27,27 +37,43 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-// Same session/room counts as SESSION_DEFAULT in src/App.jsx (3-3-2-2).
-const SESSION_ROOM_COUNTS = { 1: 3, 2: 3, 3: 2, 4: 2 };
+const { data: row, error: readError } = await supabase
+  .from('tournament_state')
+  .select('data')
+  .eq('id', 1)
+  .single();
+
+if (readError || !row || !row.data || !Array.isArray(row.data.rooms)) {
+  console.error('Gagal membaca data turnamen dari Supabase:', readError?.message || 'data tidak ditemukan.');
+  console.error('Pastikan aplikasi sudah pernah dibuka minimal sekali (supaya baris awal tersimpan) dan admin sudah menambahkan ruangan.');
+  process.exit(1);
+}
+
+const rooms = row.data.rooms;
+
+if (rooms.length === 0) {
+  console.log('Belum ada ruangan yang dibuat admin di aplikasi. Tambahkan ruangan dulu lewat Sesi > Tambah Ruangan, baru jalankan script ini.');
+  process.exit(0);
+}
 
 const accounts = [
   { email: 'admin@lrp2026.internal', password: 'lrp2026', app_metadata: { role: 'admin' } },
 ];
-for (const session of [1, 2, 3, 4]) {
-  for (let roomNo = 1; roomNo <= SESSION_ROOM_COUNTS[session]; roomNo++) {
-    accounts.push({
-      email: `s${session}r${roomNo}@lrp2026.internal`,
-      password: `s${session}r${roomNo}-2026`,
-      app_metadata: { role: 'pengawas', session, roomNo },
-    });
-  }
+for (const room of rooms) {
+  accounts.push({
+    email: `s${room.session}r${room.roomNo}@lrp2026.internal`,
+    password: `s${room.session}r${room.roomNo}-2026`,
+    app_metadata: { role: 'pengawas', session: room.session, roomNo: room.roomNo },
+  });
 }
 
-console.log(`Membuat/memperbarui ${accounts.length} akun...\n`);
+console.log(`Ditemukan ${rooms.length} ruangan di data turnamen. Membuat/memperbarui ${accounts.length} akun (1 admin + ${rooms.length} pengawas)...\n`);
+
+const { data: existingList } = await supabase.auth.admin.listUsers();
+const existingUsers = existingList?.users || [];
 
 for (const acc of accounts) {
-  const { data: existing } = await supabase.auth.admin.listUsers();
-  const found = existing?.users?.find((u) => u.email === acc.email);
+  const found = existingUsers.find((u) => u.email === acc.email);
 
   if (found) {
     const { error } = await supabase.auth.admin.updateUserById(found.id, {
@@ -66,6 +92,8 @@ for (const acc of accounts) {
   }
 }
 
-console.log('\nSelesai. Kode akses login di aplikasi TETAP SAMA seperti sebelumnya:');
-console.log('  Admin: lrp2026');
-console.log('  Pengawas: s{sesi}r{ruangan}-2026, contoh s1r1-2026, s3r2-2026, dst.');
+console.log('\nSelesai. Kode login di aplikasi:');
+console.log('  Admin  -> email: admin@lrp2026.internal   password: lrp2026');
+console.log('  Pengawas -> email: s{sesi}r{ruangan}@lrp2026.internal   password: s{sesi}r{ruangan}-2026');
+console.log('  (sesuai ruangan yang benar-benar ada sekarang, terdaftar di atas)');
+console.log('\nKalau admin menambah/menghapus ruangan lagi nanti, jalankan ulang script ini untuk menyesuaikan akun pengawas.');

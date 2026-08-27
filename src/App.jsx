@@ -2,11 +2,9 @@ import { useState, useEffect, useRef, Fragment } from 'react';
 import { Trophy, Lock, Unlock, ChevronLeft, Upload, RotateCcw, X, Plus, Trash2, Shuffle, Camera, FileSpreadsheet, UserCog } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
-const ROOM_COUNT = 10;
 const PARTICIPANTS_PER_ROOM = 64;
 const ROUND_NAMES = ['Babak 64 Besar', 'Babak 32 Besar', 'Babak 16 Besar', 'Perempat Final', 'Semifinal Ruangan', 'Final Ruangan'];
 const ADMIN_PIN = 'lrp2026';
-const SESSION_DEFAULT = { 1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 2, 7: 3, 8: 3, 9: 4, 10: 4 };
 const STAGE_H = 1990;
 const STAGE_W = STAGE_H * 16 / 9;
 const HEADER_H = 70;
@@ -98,19 +96,8 @@ function buildRoundsFromParticipants(participants) {
   return rounds;
 }
 
-function computeRoomNo(id) {
-  const session = SESSION_DEFAULT[id] || 1;
-  let roomNo = 0;
-  for (let i = 1; i <= id; i++) {
-    if ((SESSION_DEFAULT[i] || 1) === session) roomNo++;
-  }
-  return roomNo;
-}
-
-function createEmptyRoom(id) {
+function createRoomInSession(id, session, roomNo) {
   const participants = Array.from({ length: PARTICIPANTS_PER_ROOM }, (_, i) => `Peserta R${id}-${i + 1}`);
-  const session = SESSION_DEFAULT[id] || 1;
-  const roomNo = computeRoomNo(id);
   return {
     id,
     name: `Ruangan ${roomNo}`,
@@ -122,9 +109,18 @@ function createEmptyRoom(id) {
   };
 }
 
+function nextRoomNoInSession(rooms, session) {
+  const used = rooms.filter(r => r.session === session).map(r => r.roomNo);
+  return used.length ? Math.max(...used) + 1 : 1;
+}
+
+function nextGlobalRoomId(rooms) {
+  return rooms.length ? Math.max(...rooms.map(r => r.id)) + 1 : 1;
+}
+
 function createInitialData() {
   return {
-    rooms: Array.from({ length: ROOM_COUNT }, (_, i) => createEmptyRoom(i + 1)),
+    rooms: [],
     finalStage: { matches: [] },
     settings: { showPengawasToPublic: false },
   };
@@ -134,12 +130,10 @@ function createInitialData() {
 // so an old Supabase record still displays and behaves correctly after this update.
 function normalizeData(raw) {
   if (!raw || !Array.isArray(raw.rooms)) return raw;
-  const sessionCounts = {};
   const rooms = raw.rooms.map(room => {
     const session = room.session || 1;
-    sessionCounts[session] = (sessionCounts[session] || 0) + 1;
-    const roomNo = sessionCounts[session];
-    return { ...room, session, roomNo, schools: room.schools || {}, name: `Ruangan ${roomNo}` };
+    const roomNo = room.roomNo || 1;
+    return { ...room, session, roomNo, schools: room.schools || {}, name: room.name || `Ruangan ${roomNo}` };
   });
   const finalStage = raw.finalStage && Array.isArray(raw.finalStage.matches) ? raw.finalStage : { matches: [] };
   const settings = { showPengawasToPublic: false, ...(raw.settings || {}) };
@@ -250,21 +244,22 @@ async function parseParticipantWorkbook(arrayBuffer) {
 }
 
 function groupRowsByRoom(rawRows) {
-  const rooms = {};
+  const groups = {};
   rawRows.forEach(raw => {
     const row = normalizeRow(raw);
-    const roomId = Number(row.ruangan);
+    const session = Number(row.sesi);
+    const roomNo = Number(row.ruangan);
     const name = String(row.nama || '').trim();
-    if (!roomId || roomId < 1 || roomId > ROOM_COUNT) return;
+    if (!session || session < 1 || session > 4) return;
+    if (!roomNo || roomNo < 1) return;
     if (!name) return;
-    if (!rooms[roomId]) rooms[roomId] = { session: null, names: [], schools: {} };
-    const sesiVal = Number(row.sesi);
-    if (!rooms[roomId].session && sesiVal >= 1 && sesiVal <= 4) rooms[roomId].session = sesiVal;
-    rooms[roomId].names.push(name);
+    const key = `${session}-${roomNo}`;
+    if (!groups[key]) groups[key] = { session, roomNo, names: [], schools: {} };
+    groups[key].names.push(name);
     const school = String(row.sekolah || '').trim();
-    if (school) rooms[roomId].schools[name] = school;
+    if (school) groups[key].schools[name] = school;
   });
-  return rooms;
+  return groups;
 }
 
 function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations }) {
@@ -703,6 +698,8 @@ function GlobalStyle() {
       .btn-ghost:hover { border-color: #C28E12; }
       .btn-crimson { background: #D6293F; color: #FFFFFF; }
       .btn-crimson:hover { background: #B31F32; }
+      .btn-ghost.btn-danger { color: #D6293F; border-color: #F0C7CD; }
+      .btn-ghost.btn-danger:hover { border-color: #D6293F; background: rgba(214,41,63,0.08); }
       .session-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; max-width: 900px; margin: 0 auto; width: 100%; }
       .session-card {
         display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
@@ -1241,29 +1238,22 @@ export default function App() {
   }
 
   function doBulkImport() {
+    if (bulkTarget === 'global' || bulkTarget == null) return;
     const names = bulkText.split('\n').map(s => s.trim()).filter(Boolean);
     const run = () => {
       const next = clone(data);
-      if (bulkTarget === 'global') {
-        for (let r = 0; r < ROOM_COUNT; r++) {
-          const slice = names.slice(r * 64, r * 64 + 64);
-          const participants = Array.from({ length: 64 }, (_, i) => slice[i] || `Peserta R${r + 1}-${i + 1}`);
-          next.rooms[r].participants = participants;
-          next.rooms[r].rounds = buildRoundsFromParticipants(participants);
-        }
-      } else {
-        const idx = next.rooms.findIndex(r => r.id === bulkTarget);
-        const participants = Array.from({ length: 64 }, (_, i) => names[i] || `Peserta R${bulkTarget}-${i + 1}`);
-        next.rooms[idx].participants = participants;
-        next.rooms[idx].rounds = buildRoundsFromParticipants(participants);
-      }
+      const idx = next.rooms.findIndex(r => r.id === bulkTarget);
+      if (idx === -1) return;
+      const participants = Array.from({ length: 64 }, (_, i) => names[i] || `Peserta R${bulkTarget}-${i + 1}`);
+      next.rooms[idx].participants = participants;
+      next.rooms[idx].rounds = buildRoundsFromParticipants(participants);
       persist(next);
       setBulkTarget(null);
       setBulkText('');
       setConfirmState(null);
     };
-    const targets = bulkTarget === 'global' ? data.rooms : data.rooms.filter(r => r.id === bulkTarget);
-    const hasProgress = targets.some(r => r.rounds.some(rd => rd.some(m => m.winner)));
+    const target = data.rooms.find(r => r.id === bulkTarget);
+    const hasProgress = target && target.rounds.some(rd => rd.some(m => m.winner));
     if (hasProgress) {
       setConfirmState({
         message: 'Ruangan tujuan sudah memiliki hasil pertandingan. Impor akan menghapus progres tersebut. Lanjutkan?',
@@ -1298,20 +1288,23 @@ export default function App() {
 
   function applyImportFile() {
     if (!importFileRows) return;
-    const roomIds = Object.keys(importFileRows).map(Number);
+    const keys = Object.keys(importFileRows);
     const run = () => {
       const next = clone(data);
-      roomIds.forEach(roomId => {
-        const group = importFileRows[roomId];
-        const idx = next.rooms.findIndex(r => r.id === roomId);
-        if (idx === -1) return;
+      keys.forEach(key => {
+        const group = importFileRows[key];
+        let room = next.rooms.find(r => r.session === group.session && r.roomNo === group.roomNo);
+        if (!room) {
+          const id = nextGlobalRoomId(next.rooms);
+          room = createRoomInSession(id, group.session, group.roomNo);
+          next.rooms.push(room);
+        }
         const names = group.names.slice(0, 64);
-        const participants = Array.from({ length: 64 }, (_, i) => names[i] || `Peserta R${roomId}-${i + 1}`);
-        next.rooms[idx].participants = participants;
-        next.rooms[idx].rounds = buildRoundsFromParticipants(participants);
-        if (group.session) next.rooms[idx].session = group.session;
+        const participants = Array.from({ length: 64 }, (_, i) => names[i] || `Peserta R${room.id}-${i + 1}`);
+        room.participants = participants;
+        room.rounds = buildRoundsFromParticipants(participants);
         if (group.schools && Object.keys(group.schools).length > 0) {
-          next.rooms[idx].schools = { ...(next.rooms[idx].schools || {}), ...group.schools };
+          room.schools = { ...(room.schools || {}), ...group.schools };
         }
       });
       persist(next);
@@ -1319,11 +1312,20 @@ export default function App() {
       setImportFileRows(null);
       setConfirmState(null);
     };
-    const targets = data.rooms.filter(r => roomIds.includes(r.id));
-    const hasProgress = targets.some(r => r.rounds.some(rd => rd.some(m => m.winner)));
-    if (hasProgress) {
+    const existingTargets = keys
+      .map(key => {
+        const group = importFileRows[key];
+        return data.rooms.find(r => r.session === group.session && r.roomNo === group.roomNo);
+      })
+      .filter(Boolean);
+    const hasProgress = existingTargets.some(r => r.rounds.some(rd => rd.some(m => m.winner)));
+    const newRoomCount = keys.length - existingTargets.length;
+    if (hasProgress || newRoomCount > 0) {
+      const parts = [];
+      if (newRoomCount > 0) parts.push(`${newRoomCount} ruangan baru akan dibuat otomatis`);
+      if (hasProgress) parts.push('ruangan yang sudah punya hasil pertandingan akan direset');
       setConfirmState({
-        message: 'Beberapa ruangan tujuan sudah memiliki hasil pertandingan. Impor akan menghapus progres tersebut. Lanjutkan?',
+        message: `${parts.join(', dan ')}. Lanjutkan?`,
         onConfirm: run,
       });
     } else {
@@ -1363,9 +1365,30 @@ export default function App() {
       onConfirm: () => {
         const next = clone(data);
         const idx = next.rooms.findIndex(r => r.id === activeRoom.id);
-        next.rooms[idx] = createEmptyRoom(activeRoom.id);
+        next.rooms[idx] = createRoomInSession(activeRoom.id, activeRoom.session, activeRoom.roomNo);
         persist(next);
         setConfirmState(null);
+      },
+    });
+  }
+
+  function handleAddRoom(session) {
+    const next = clone(data);
+    const roomNo = nextRoomNoInSession(next.rooms, session);
+    const id = nextGlobalRoomId(next.rooms);
+    next.rooms.push(createRoomInSession(id, session, roomNo));
+    persist(next);
+  }
+
+  function requestDeleteRoom(room) {
+    setConfirmState({
+      message: `${room.name} (Sesi ${room.session}) akan DIHAPUS PERMANEN beserta seluruh data pesertanya — beda dari Reset (yang cuma mengosongkan isinya, ruangannya tetap ada). Ruangan lain tidak terpengaruh. Yakin?`,
+      onConfirm: () => {
+        const next = clone(data);
+        next.rooms = next.rooms.filter(r => r.id !== room.id);
+        persist(next);
+        setConfirmState(null);
+        setView('session');
       },
     });
   }
@@ -1531,12 +1554,12 @@ export default function App() {
         <section className="hero">
           <div className="hero-badge">🎪 Turnamen 1 Lawan 1</div>
           <h2>LRP Bracket 2026</h2>
-          <p>640 peserta &middot; 10 ruangan &middot; 4 sesi &middot; setiap ruangan menghasilkan 1 juara ke babak lanjutan</p>
+          <p>{data.rooms.length > 0 ? `${data.rooms.length} ruangan aktif` : 'Belum ada ruangan dibuat'} &middot; 4 sesi &middot; setiap ruangan menghasilkan 1 juara ke babak lanjutan</p>
         </section>
 
         {isAdmin && (
           <div className="toolbar">
-            <button type="button" className="btn btn-gold" onClick={() => setBulkTarget('global')}><Upload size={15} /> Impor 640 Peserta</button>
+            <button type="button" className="btn btn-gold" onClick={() => setBulkTarget('global')}><Upload size={15} /> Impor dari File</button>
             <label className="pengawas-toggle">
               <input
                 type="checkbox"
@@ -1556,7 +1579,9 @@ export default function App() {
               <button key={s} type="button" className="session-card" onClick={() => openSession(s)}>
                 <span className="session-card-label">Sesi</span>
                 <span className="session-card-number">{s}</span>
-                <span className="session-card-sub">{roomsInSession.length} ruangan &middot; {doneInSession}/{roomsInSession.length} juara</span>
+                <span className="session-card-sub">
+                  {roomsInSession.length > 0 ? `${roomsInSession.length} ruangan · ${doneInSession}/${roomsInSession.length} juara` : 'Belum ada ruangan'}
+                </span>
               </button>
             );
           })}
@@ -1565,7 +1590,7 @@ export default function App() {
         <section className="final-teaser" onClick={() => setView('final')}>
           <div className="final-teaser-text">
             <h3><Trophy size={18} /> Babak Lanjutan</h3>
-            <p>{doneRooms}/10 ruangan sudah punya juara{champion ? ` · Juara Umum: ${champion}` : ''}</p>
+            <p>{doneRooms}/{data.rooms.length} ruangan sudah punya juara{champion ? ` · Juara Umum: ${champion}` : ''}</p>
           </div>
           <ChevronLeft size={18} className="rotate-180" />
         </section>
@@ -1581,13 +1606,25 @@ export default function App() {
         <section className="hero">
           <div className="hero-badge">Sesi {activeSession}</div>
           <h2>Ruangan Sesi {activeSession}</h2>
-          <p>{roomsInSession.length} ruangan berlangsung di sesi ini</p>
+          <p>{roomsInSession.length > 0 ? `${roomsInSession.length} ruangan berlangsung di sesi ini` : 'Belum ada ruangan di sesi ini'}</p>
         </section>
-        <div className="room-grid">
-          {roomsInSession.map(room => (
-            <RoomCard key={room.id} room={room} onOpen={() => openRoom(room)} />
-          ))}
-        </div>
+        {isAdmin && (
+          <div className="toolbar">
+            <button type="button" className="btn btn-gold" onClick={() => handleAddRoom(activeSession)}><Plus size={15} /> Tambah Ruangan</button>
+          </div>
+        )}
+        {roomsInSession.length === 0 ? (
+          <div className="empty-state">
+            <p>Belum ada ruangan di Sesi {activeSession}.</p>
+            {isAdmin && <p>Tekan "Tambah Ruangan" untuk mulai menambahkan — jumlahnya bisa disesuaikan kapan saja.</p>}
+          </div>
+        ) : (
+          <div className="room-grid">
+            {roomsInSession.map(room => (
+              <RoomCard key={room.id} room={room} onOpen={() => openRoom(room)} />
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -1619,6 +1656,7 @@ export default function App() {
               <button type="button" className="btn btn-ghost sm" onClick={() => setBulkTarget(activeRoom.id)}><Upload size={13} /> Impor</button>
               <button type="button" className="btn btn-ghost sm" onClick={handleSimulate}><Shuffle size={13} /> Simulasikan</button>
               <button type="button" className="btn btn-ghost sm" onClick={requestResetRoom}><RotateCcw size={13} /> Reset Ruangan</button>
+              <button type="button" className="btn btn-ghost sm btn-danger" onClick={() => requestDeleteRoom(activeRoom)}><Trash2 size={13} /> Hapus Ruangan</button>
             </div>
           )}
         </div>
@@ -1839,11 +1877,11 @@ export default function App() {
           onClose={() => { setBulkTarget(null); setBulkText(''); setImportFileRows(null); setImportFileError(''); }}
           wide
         >
-          {bulkTarget === 'global' && (
+          {bulkTarget === 'global' ? (
             <>
-              <label className="field-label">Impor dari File Excel/CSV (disarankan)</label>
+              <label className="field-label">Impor dari File Excel/CSV</label>
               <p className="modal-hint">
-                File butuh kolom "sesi", "ruangan", dan "nama" — cocok buat daftar yang sudah disusun per sesi & ruangan.{' '}
+                File butuh kolom "sesi", "ruangan", dan "nama". Ruangan yang belum ada akan <strong>dibuat otomatis</strong> sesuai sesi & nomor ruangan di file — cocok dipakai saat menyesuaikan struktur ruangan mendekati hari H.{' '}
                 <a href="/template-peserta-lrp.xlsx" download className="template-link">Unduh template kosong</a>
               </p>
               <label className="btn btn-ghost sm upload-label">
@@ -1853,38 +1891,42 @@ export default function App() {
               {importFileError && <p className="error-text">{importFileError}</p>}
               {importFileRows && (
                 <div className="import-preview">
-                  {Array.from({ length: ROOM_COUNT }, (_, i) => i + 1).map(roomId => {
-                    const group = importFileRows[roomId];
-                    const ok = group && group.names.length === 64;
-                    return (
-                      <div key={roomId} className={'import-preview-row' + (!group ? ' missing' : ok ? ' ok' : ' warn')}>
-                        <span>Ruangan {roomId}</span>
-                        <span>{group ? `${group.names.length} nama · Sesi ${group.session || (data.rooms.find(r => r.id === roomId) || {}).session || '?'}` : 'tidak ada data'}</span>
-                      </div>
-                    );
-                  })}
+                  {Object.keys(importFileRows)
+                    .sort((a, b) => {
+                      const ga = importFileRows[a], gb = importFileRows[b];
+                      return ga.session - gb.session || ga.roomNo - gb.roomNo;
+                    })
+                    .map(key => {
+                      const group = importFileRows[key];
+                      const existing = data.rooms.find(r => r.session === group.session && r.roomNo === group.roomNo);
+                      const ok = group.names.length === 64;
+                      return (
+                        <div key={key} className={'import-preview-row' + (ok ? ' ok' : ' warn')}>
+                          <span>Sesi {group.session} · Ruangan {group.roomNo}{!existing ? ' (baru)' : ''}</span>
+                          <span>{group.names.length} nama</span>
+                        </div>
+                      );
+                    })}
                 </div>
               )}
               {importFileRows && (
                 <button type="button" className="btn btn-gold full" onClick={applyImportFile}>Terapkan dari File</button>
               )}
-              <div className="modal-divider">atau tempel manual</div>
+            </>
+          ) : (
+            <>
+              <p className="modal-hint">Tempel 64 nama untuk ruangan ini (1 nama per baris).</p>
+              <textarea
+                className="text-area"
+                rows={8}
+                value={bulkText}
+                onChange={e => setBulkText(e.target.value)}
+                placeholder={'Nama Peserta 1\nNama Peserta 2\nNama Peserta 3\n...'}
+              />
+              <p className="modal-hint">{bulkText.split('\n').map(s => s.trim()).filter(Boolean).length} nama terdeteksi</p>
+              <button type="button" className="btn btn-ghost full" onClick={doBulkImport}>Simpan dari Teks</button>
             </>
           )}
-          <p className="modal-hint">
-            {bulkTarget === 'global'
-              ? 'Tempel hingga 640 nama (1 nama per baris). Nama akan dibagi otomatis ke 10 ruangan sesuai urutan, 64 nama per ruangan.'
-              : 'Tempel 64 nama untuk ruangan ini (1 nama per baris).'}
-          </p>
-          <textarea
-            className="text-area"
-            rows={8}
-            value={bulkText}
-            onChange={e => setBulkText(e.target.value)}
-            placeholder={'Nama Peserta 1\nNama Peserta 2\nNama Peserta 3\n...'}
-          />
-          <p className="modal-hint">{bulkText.split('\n').map(s => s.trim()).filter(Boolean).length} nama terdeteksi</p>
-          <button type="button" className="btn btn-ghost full" onClick={doBulkImport}>Simpan dari Teks</button>
         </Modal>
       )}
 

@@ -188,6 +188,32 @@ Sekarang kalau penyimpanan gagal (misalnya sesi kadaluarsa, atau — seharusnya 
 - Kanvas bracket diperbesar lagi (~25%) supaya baris nama pengawas ini muat dengan nyaman tanpa bikin kotak-kotak lain jadi sempit — geometrinya sudah diverifikasi ulang sebelum diterapkan, sama seperti setiap kali ukurannya berubah.
 - **Edge Function diperbarui lagi**: field `settings` (tempat pengaturan visibilitas ini disimpan) sekarang admin-only juga — pengawas tidak bisa mengubah pengaturan ini lewat jalur API, sudah diuji terpisah dengan 3 skenario tambahan. **Perlu deploy ulang** (`supabase functions deploy update-match`) lagi untuk versi ini.
 
+## Revisi besar: ruangan sekarang dinamis, bukan 10 ruangan tetap dari awal
+
+Ini perubahan struktural, bukan cuma tampilan — dibaca pelan-pelan.
+
+**Sebelumnya**: aplikasi selalu mulai dengan 10 ruangan yang sudah ada (3-3-2-2 per sesi), ditentukan di kode.
+
+**Sekarang**: aplikasi mulai **benar-benar kosong** — 0 ruangan di semua sesi. Admin menambahkan ruangan satu per satu ke sesi yang diinginkan, kapan saja, termasuk mendekati hari H setelah jumlah peserta/ruangan final. Ini juga berarti jumlah ruangan per sesi **tidak harus sama** dan **tidak harus 10 total** — sepenuhnya menyesuaikan kebutuhan sebenarnya.
+
+### Cara pakai
+
+- **Tambah ruangan**: masuk sebagai admin → buka salah satu kartu Sesi → tombol "Tambah Ruangan". Nomor ruangan terisi otomatis (urut per sesi), bisa ditambah berkali-kali kapan saja.
+- **Hapus ruangan**: di halaman ruangan (admin) → tombol "Hapus Ruangan" (merah, beda dari "Reset Ruangan" yang cuma mengosongkan isi tapi ruangannya tetap ada). Ruangan yang dihapus meninggalkan celah nomor (tidak dipakai ulang otomatis) — ini sengaja, supaya kalau sudah ada akun pengawas untuk ruangan itu, tidak ketuker sama ruangan lain yang kebetulan dapat nomor sama.
+- **Impor dari Excel/CSV** sekarang bisa **membuat ruangan otomatis**: kalau file berisi kombinasi sesi+ruangan yang belum ada, ruangan itu langsung dibuat saat diterapkan — cocok dipakai sebagai cara cepat menyusun semua ruangan sekaligus dari daftar peserta yang sudah disiapkan panitia. Pratinjau sebelum diterapkan akan menandai ruangan mana yang baru (ditandai "(baru)").
+- **Impor lewat tempel teks manual** sekarang hanya tersedia per-ruangan (ruangan itu harus sudah dibuat dulu) — opsi "tempel 640 nama sekaligus" dihapus karena tidak lagi bisa diasumsikan ada 10 ruangan.
+
+### Dampak ke `scripts/setup-auth-users.mjs`
+
+Karena jumlah & susunan ruangan sekarang ditentukan admin di aplikasi (bukan lagi tetap di kode), script pembuat akun pengawas **sudah diperbarui untuk membaca struktur ruangan langsung dari database Supabase**, bukan lagi asumsi jumlah tetap. Alur yang disarankan:
+
+1. Admin menyelesaikan penyusunan ruangan di aplikasi (kapan saja, termasuk mendekati hari H).
+2. Baru jalankan (atau jalankan ulang) `node scripts/setup-auth-users.mjs` — otomatis membuat akun pengawas persis sesuai ruangan yang ada saat itu.
+3. Kalau admin menambah/menghapus ruangan lagi setelahnya, jalankan ulang script ini — aman dijalankan berkali-kali, cuma menyesuaikan akun yang perlu berubah.
+
+Format email/password pengawas tetap sama (`s{sesi}r{ruangan}@lrp2026.internal` / `s{sesi}r{ruangan}-2026`), cuma sekarang jumlah akun yang dibuat mengikuti ruangan yang benar-benar ada.
+
+
 
 
 
