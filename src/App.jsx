@@ -3,6 +3,20 @@ import { Trophy, Lock, Unlock, ChevronLeft, Upload, RotateCcw, X, Plus, Trash2, 
 import { supabase } from './supabaseClient';
 
 const PARTICIPANTS_PER_ROOM = 64;
+// Babak Penyisihan: sesi 1 & 2 masing-masing 3 ruangan (3 pemenang), sesi 3 & 4 masing-masing 2 ruangan (2 pemenang).
+const ROOMS_PER_SESSION = { 1: 3, 2: 3, 3: 2, 4: 2 };
+const TOTAL_QUALIFIERS = 10;
+const SEMIFINAL_SERIES_COUNT = 5;
+const FINALIST_COUNT = 5;
+const FINAL_ROUNDS = 2;
+// Poin Babak Final (liga home-away). Poin dihitung otomatis dari jenis kemenangan yang dipilih admin; yang kalah selalu 0.
+const WIN_TYPES = [
+  { key: '4row', label: '4 pion berjejer', points: 4 },
+  { key: '3most', label: '3 pion berjejer terbanyak', points: 3 },
+  { key: '3first', label: '3 pion berjajar tercepat/pertama', points: 2 },
+  { key: '2most', label: '2 pion berjajar terbanyak', points: 1 },
+];
+const FINAL_PLACES = ['Juara 1', 'Juara 2', 'Juara 3', 'Harapan 1', 'Harapan 2'];
 const ROUND_NAMES = ['Babak 64 Besar', 'Babak 32 Besar', 'Babak 16 Besar', 'Perempat Final', 'Semifinal Ruangan', 'Final Ruangan'];
 const ADMIN_PIN = 'lrp2026';
 const STAGE_H = 1990;
@@ -206,8 +220,106 @@ function simulateRoom(room) {
   return next;
 }
 
-function makeFinalMatch(round, p1, p2) {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, round, p1, p2, winner: null, photo: null, durationSeconds: null, violations: '', pengawasName: '' };
+function makeFinalMatch(fields) {
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, round: '', stage: 'semifinal', series: null, game: null, finalRound: null, p1: null, p2: null, winner: null, winType: null, photo: null, durationSeconds: null, violations: '', pengawasName: '', ...fields };
+}
+
+function getSemifinalGames(matches, series) {
+  return matches.filter(m => m.stage === 'semifinal' && m.series === series).sort((a, b) => a.game - b.game);
+}
+
+function getSeriesStatus(matches, series) {
+  const games = getSemifinalGames(matches, series);
+  const first = games[0];
+  if (!first) return { p1: null, p2: null, w1: 0, w2: 0, winner: null, games };
+  const w1 = games.filter(g => g.winner && g.winner === first.p1).length;
+  const w2 = games.filter(g => g.winner && g.winner === first.p2).length;
+  const winner = w1 >= 2 ? first.p1 : w2 >= 2 ? first.p2 : null;
+  return { p1: first.p1, p2: first.p2, w1, w2, winner, games };
+}
+
+// BO3: game 3 exists only when games 1 and 2 are split 1-1; removed again if that stops being true.
+function syncSemifinalSeries(finalStage, series) {
+  const games = getSemifinalGames(finalStage.matches, series);
+  if (games.length < 2) return;
+  const [g1, g2] = games;
+  const split = !!(g1.winner && g2.winner && g1.winner !== g2.winner);
+  const g3 = games.find(g => g.game === 3);
+  if (split && !g3) {
+    finalStage.matches.push(makeFinalMatch({ stage: 'semifinal', series, game: 3, round: `Semifinal ${series} · Game 3 (penentu)`, p1: g1.p1, p2: g1.p2 }));
+  } else if (!split && g3) {
+    finalStage.matches = finalStage.matches.filter(m => m.id !== g3.id);
+  }
+}
+
+function getSemifinalWinners(matches) {
+  const out = [];
+  for (let i = 1; i <= SEMIFINAL_SERIES_COUNT; i++) {
+    const st = getSeriesStatus(matches, i);
+    if (st.winner) out.push(st.winner);
+  }
+  return out;
+}
+
+function getFinalMatches(matches) {
+  return matches.filter(m => m.stage === 'final');
+}
+
+// Liga home-away: leg 1 tiap pasangan bertemu sekali (p1 = tuan rumah), leg 2 mengulang dengan tuan rumah dibalik.
+// 5 finalis => 4 pertandingan per leg, 8 total per finalis, 20 pertandingan seluruhnya.
+function buildFinalSchedule(finalists) {
+  const order = finalists.slice();
+  if (order.length % 2 === 1) order.push(null);
+  const n = order.length;
+  const pairs = [];
+  const arr = order.slice();
+  for (let r = 0; r < n - 1; r++) {
+    for (let i = 0; i < n / 2; i++) {
+      const a = arr[i], b = arr[n - 1 - i];
+      if (a && b) pairs.push([a, b]);
+    }
+    arr.splice(1, 0, arr.pop());
+  }
+  const matches = [];
+  for (let round = 1; round <= FINAL_ROUNDS; round++) {
+    pairs.forEach(([a, b], idx) => {
+      const home = round === 1 ? a : b;
+      const away = round === 1 ? b : a;
+      matches.push(makeFinalMatch({ stage: 'final', finalRound: round, game: idx + 1, round: `Final · ${round === 1 ? 'Home' : 'Away'} · Game ${idx + 1}`, p1: home, p2: away }));
+    });
+  }
+  return matches;
+}
+
+function getWinType(key) {
+  return WIN_TYPES.find(t => t.key === key) || null;
+}
+
+// Pertandingan final dianggap selesai hanya jika pemenang DAN jenis kemenangan sudah diisi.
+function isFinalGameDone(m) {
+  return !!(m.winner && getWinType(m.winType));
+}
+
+function getFinalGamePoints(m, name) {
+  if (!isFinalGameDone(m) || m.winner !== name) return 0;
+  return getWinType(m.winType).points;
+}
+
+function computeFinalStandings(matches, finalists) {
+  const finals = getFinalMatches(matches);
+  const rows = finalists.map(name => {
+    const played = finals.filter(m => m.p1 === name || m.p2 === name);
+    const done = played.filter(isFinalGameDone);
+    const wins = done.filter(m => m.winner === name).length;
+    const points = done.reduce((sum, m) => sum + getFinalGamePoints(m, name), 0);
+    const timed = done.filter(m => m.durationSeconds != null);
+    const totalSeconds = timed.length ? timed.reduce((sum, m) => sum + m.durationSeconds, 0) : null;
+    return { name, points, wins, losses: done.length - wins, totalSeconds, total: played.length, decided: done.length };
+  });
+  const timeKey = r => (r.totalSeconds == null ? Number.MAX_SAFE_INTEGER : r.totalSeconds);
+  // Urutan: poin terbanyak, lalu jumlah menang, lalu total durasi tercepat.
+  rows.sort((a, b) => b.points - a.points || b.wins - a.wins || timeKey(a) - timeKey(b));
+  return rows;
 }
 
 function getPengawasPin(session, roomNo) {
@@ -251,7 +363,7 @@ function groupRowsByRoom(rawRows) {
     const roomNo = Number(row.ruangan);
     const name = String(row.nama || '').trim();
     if (!session || session < 1 || session > 4) return;
-    if (!roomNo || roomNo < 1) return;
+    if (!roomNo || roomNo < 1 || roomNo > ROOMS_PER_SESSION[session]) return;
     if (!name) return;
     const key = `${session}-${roomNo}`;
     if (!groups[key]) groups[key] = { session, roomNo, names: [], schools: {} };
@@ -262,7 +374,7 @@ function groupRowsByRoom(rawRows) {
   return groups;
 }
 
-function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations }) {
+function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations, winType, onPickWinType, scoring }) {
   const playable = !!(p1 && p2) && !readOnly;
   const hasExtra = !!(photo || violations);
   return (
@@ -304,6 +416,24 @@ function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpen
           {p2 || 'Menunggu…'}
         </button>
       </div>
+      {scoring && winner && (
+        <div className="win-types">
+          <div className="win-types-head">Poin {winner}: <strong>{getWinType(winType) ? `+${getWinType(winType).points}` : 'belum dipilih'}</strong></div>
+          {WIN_TYPES.map(t => (
+            <button
+              key={t.key}
+              type="button"
+              disabled={readOnly}
+              className={'win-type-btn' + (winType === t.key ? ' active' : '')}
+              onClick={() => onPickWinType(winType === t.key ? null : t.key)}
+            >
+              <span>{t.label}</span><b>+{t.points}</b>
+            </button>
+          ))}
+        </div>
+      )}
+      {scoring && p1 && p2 && !winner && <div className="win-types-hint">Pilih pemenang dulu</div>}
+      {scoring && winner && !getWinType(winType) && <div className="win-types-warn">⚠ Pilih jenis kemenangan agar poin terhitung</div>}
       {durationSeconds != null && <div className="ticket-duration">⏱ {formatDuration(durationSeconds)}</div>}
     </div>
   );
@@ -887,6 +1017,27 @@ function GlobalStyle() {
       .qualifier-room { font-size: 10px; color: #8D8371; }
       .qualifier-name { font-size: 12px; font-weight: 700; color: #2B2013; }
       .qualifier-chip.ready .qualifier-name { color: #A6790E; }
+      .stage-title { font-family: 'Bungee', cursive; font-weight: 400; font-size: 15px; color: #A6790E; margin: 10px 0 0; }
+      .stage-subtitle { font-size: 13px; margin: 14px 0 8px; color: #2B2013; }
+      .stage-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .win-types { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+      .win-types-head { font-size: 11px; color: #8D8371; }
+      .win-type-btn { display: flex; justify-content: space-between; align-items: center; font-family: inherit; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid #E9DCC0; background: #FFFFFF; color: #2B2013; cursor: pointer; }
+      .win-type-btn:disabled { cursor: default; opacity: 0.7; }
+      .win-type-btn.active { border-color: #C28E12; background: rgba(194,142,18,0.16); font-weight: 700; color: #A6790E; }
+      .win-types-hint { margin-top: 6px; font-size: 11px; color: #8D8371; text-align: center; }
+      .win-types-warn { margin-top: 6px; font-size: 11px; color: #D6455C; text-align: center; font-weight: 600; }
+      .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+      .series-list { display: flex; flex-direction: column; gap: 14px; }
+      .series-card { background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 14px; padding: 12px; }
+      .series-card.done { border-color: #D9BE7E; }
+      .series-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+      .series-score { font-family: 'Bungee', cursive; color: #A6790E; }
+      .series-winner { color: #A6790E; font-weight: 600; margin-right: auto; }
+      .standings { width: 100%; border-collapse: collapse; background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 12px; font-size: 13px; }
+      .standings th, .standings td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #F0E6CE; }
+      .standings th { font-size: 11px; color: #8D8371; text-transform: uppercase; }
+      .standings tr.top td { background: rgba(194,142,18,0.14); font-weight: 700; }
       .empty-state { text-align: center; padding: 30px 16px; color: #8D8371; font-size: 13px; }
       .empty-state p { margin: 4px 0; }
       .modal-overlay {
@@ -970,7 +1121,6 @@ export default function App() {
   const [importFileError, setImportFileError] = useState('');
 
   const [showNewMatch, setShowNewMatch] = useState(false);
-  const [newRound, setNewRound] = useState('Semifinal');
   const [newP1, setNewP1] = useState('');
   const [newP2, setNewP2] = useState('');
 
@@ -1090,16 +1240,19 @@ export default function App() {
     .filter(r => getRoomChampion(r))
     .map(r => ({ room: r, name: getRoomChampion(r), display: `${getRoomChampion(r)} (${r.name})` }));
 
-  const finalPoolSet = new Set([
-    ...qualifiers.map(q => q.display),
-    ...data.finalStage.matches.map(m => m.winner).filter(Boolean),
-  ]);
-  const finalPool = Array.from(finalPoolSet);
-
-  const champion = (() => {
-    const finalMatch = [...data.finalStage.matches].reverse().find(m => m.round.trim().toLowerCase() === 'final' && m.winner);
-    return finalMatch ? finalMatch.winner : null;
-  })();
+  const finalMatches = data.finalStage.matches;
+  const semifinalPaired = new Set();
+  for (let i = 1; i <= SEMIFINAL_SERIES_COUNT; i++) {
+    const st = getSeriesStatus(finalMatches, i);
+    if (st.p1) semifinalPaired.add(st.p1);
+    if (st.p2) semifinalPaired.add(st.p2);
+  }
+  const semifinalPool = qualifiers.map(q => q.display).filter(n => !semifinalPaired.has(n));
+  const semifinalWinners = getSemifinalWinners(finalMatches);
+  const finalGames = getFinalMatches(finalMatches);
+  const finalStandings = finalGames.length > 0 ? computeFinalStandings(finalMatches, Array.from(new Set(finalGames.flatMap(m => [m.p1, m.p2])))) : [];
+  const finalComplete = finalGames.length > 0 && finalGames.every(isFinalGameDone);
+  const champion = finalComplete && finalStandings[0] ? finalStandings[0].name : null;
 
   function openRoom(room) {
     setActiveRoomId(room.id);
@@ -1274,7 +1427,7 @@ export default function App() {
       const rawRows = await parseParticipantWorkbook(buf);
       const grouped = groupRowsByRoom(rawRows);
       if (Object.keys(grouped).length === 0) {
-        setImportFileError('Tidak ada data yang terbaca. Pastikan file punya kolom "sesi", "ruangan", dan "nama" yang terisi.');
+        setImportFileError('Tidak ada data yang terbaca. Pastikan file punya kolom "sesi", "ruangan", dan "nama" yang terisi (Sesi 1 & 2: Ruangan 1-3, Sesi 3 & 4: Ruangan 1-2).');
         return;
       }
       setImportFileRows(grouped);
@@ -1333,29 +1486,96 @@ export default function App() {
     }
   }
 
-  function createFinalMatch() {
+  function createSemifinalSeries() {
     if (!newP1 || !newP2 || newP1 === newP2) return;
     const next = clone(data);
-    next.finalStage.matches.push(makeFinalMatch(newRound.trim() || 'Semifinal', newP1, newP2));
+    let series = 1;
+    while (getSemifinalGames(next.finalStage.matches, series).length > 0) series++;
+    if (series > SEMIFINAL_SERIES_COUNT) return;
+    [1, 2].forEach(game => {
+      next.finalStage.matches.push(makeFinalMatch({ stage: 'semifinal', series, game, round: `Semifinal ${series} · Game ${game}`, p1: newP1, p2: newP2 }));
+    });
     persist(next);
     setShowNewMatch(false);
     setNewP1('');
     setNewP2('');
-    setNewRound('Semifinal');
+  }
+
+  function generateFinal() {
+    if (semifinalWinners.length !== FINALIST_COUNT || finalGames.length > 0) return;
+    const next = clone(data);
+    next.finalStage.matches.push(...buildFinalSchedule(semifinalWinners));
+    persist(next);
+  }
+
+  function requestDeleteFinalSchedule() {
+    setConfirmState({
+      message: 'Seluruh jadwal & hasil Babak Final akan dihapus. Semifinal tidak terpengaruh. Yakin?',
+      onConfirm: () => {
+        const next = clone(data);
+        next.finalStage.matches = next.finalStage.matches.filter(m => m.stage !== 'final');
+        persist(next);
+        setConfirmState(null);
+      },
+    });
   }
 
   function pickFinalWinner(matchId, winnerName) {
     if (!isAdmin) return;
     const next = clone(data);
     const match = next.finalStage.matches.find(m => m.id === matchId);
+    if (!match) return;
+    if (match.winner !== winnerName) match.winType = null; // ganti pemenang => jenis kemenangan harus dipilih ulang
     match.winner = winnerName;
+    if (match.stage === 'semifinal') syncSemifinalSeries(next.finalStage, match.series);
     persist(next);
   }
 
-  function deleteFinalMatch(matchId) {
+  function pickWinType(matchId, winType) {
+    if (!isAdmin) return;
     const next = clone(data);
-    next.finalStage.matches = next.finalStage.matches.filter(m => m.id !== matchId);
+    const match = next.finalStage.matches.find(m => m.id === matchId);
+    if (!match || !match.winner || match.stage !== 'final') return;
+    match.winType = winType;
     persist(next);
+  }
+
+  // Acak pasangan semifinal dari pemenang penyisihan yang belum dipasangkan.
+  function shuffleSemifinalPairs() {
+    const pool = semifinalPool.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const next = clone(data);
+    for (let i = 0; i + 1 < pool.length; i += 2) {
+      let series = 1;
+      while (getSemifinalGames(next.finalStage.matches, series).length > 0) series++;
+      if (series > SEMIFINAL_SERIES_COUNT) break;
+      [1, 2].forEach(game => {
+        next.finalStage.matches.push(makeFinalMatch({ stage: 'semifinal', series, game, round: `Semifinal ${series} · Game ${game}`, p1: pool[i], p2: pool[i + 1] }));
+      });
+    }
+    persist(next);
+  }
+
+  function requestShuffleSemifinal() {
+    setConfirmState({
+      message: `${semifinalPool.length} pemenang yang belum berpasangan akan diacak menjadi pasangan semifinal secara acak. Pasangan yang sudah ada tidak berubah. Lanjutkan?`,
+      onConfirm: () => { shuffleSemifinalPairs(); setConfirmState(null); },
+    });
+  }
+
+  function requestDeleteSemifinalSeries(series) {
+    setConfirmState({
+      message: `Pasangan Semifinal ${series} beserta hasilnya akan dihapus${finalGames.length > 0 ? ', dan jadwal Babak Final ikut dihapus' : ''}. Yakin?`,
+      onConfirm: () => {
+        const next = clone(data);
+        next.finalStage.matches = next.finalStage.matches.filter(m => m.stage !== 'final' && !(m.stage === 'semifinal' && m.series === series));
+        persist(next);
+        setConfirmState(null);
+      },
+    });
   }
 
   function requestResetRoom() {
@@ -1373,6 +1593,7 @@ export default function App() {
   }
 
   function handleAddRoom(session) {
+    if (data.rooms.filter(r => r.session === session).length >= ROOMS_PER_SESSION[session]) return;
     const next = clone(data);
     const roomNo = nextRoomNoInSession(next.rooms, session);
     const id = nextGlobalRoomId(next.rooms);
@@ -1403,7 +1624,11 @@ export default function App() {
           clearMatch(room, roundIdx, matchIdx);
         } else {
           const m = next.finalStage.matches.find(mm => mm.id === finalMatchId);
-          if (m) m.winner = null;
+          if (m) {
+            m.winner = null;
+            m.winType = null;
+            if (m.stage === 'semifinal') syncSemifinalSeries(next.finalStage, m.series);
+          }
         }
         persist(next);
         setConfirmState(null);
@@ -1451,9 +1676,15 @@ export default function App() {
   }
 
   function updateSession(roomId, session) {
+    const target = Number(session);
+    if (data.rooms.filter(r => r.session === target && r.id !== roomId).length >= ROOMS_PER_SESSION[target]) {
+      setSaveError(`Sesi ${target} sudah penuh (maks. ${ROOMS_PER_SESSION[target]} ruangan).`);
+      return;
+    }
     const next = clone(data);
     const room = next.rooms.find(r => r.id === roomId);
-    room.session = Number(session);
+    room.session = target;
+    room.roomNo = nextRoomNoInSession(next.rooms.filter(r => r.id !== roomId), target);
     persist(next);
   }
 
@@ -1487,14 +1718,14 @@ export default function App() {
         <div className="landing-hero">
           <div className="landing-badge">🎪 MCR &amp; LRP 2026</div>
           <h1 className="landing-title">Selamat Datang di LRP 2026<span className="sparkle sparkle-1">✦</span><span className="sparkle sparkle-2">✦</span></h1>
-          <p className="landing-sub">640 peserta &middot; 10 ruangan &middot; 4 sesi &middot; satu panggung juara</p>
+          <p className="landing-sub">Penyisihan 4 sesi &middot; 10 semifinalis &middot; 5 finalis &middot; satu panggung juara</p>
           <p className="landing-credit">HIMAPSTIKA &amp; HIMADIKMA · Universitas Negeri Surabaya</p>
         </div>
         <div className="landing-options">
           <button type="button" className="landing-card" onClick={() => setView('dashboard')}>
             <Trophy size={30} />
             <h3>Lihat Bracket</h3>
-            <p>Pantau hasil pertandingan tiap ruangan secara langsung — untuk peserta &amp; wali murid.</p>
+            <p>Pantau babak penyisihan, semifinal, dan final secara langsung — untuk peserta &amp; wali murid.</p>
           </button>
           <button type="button" className="landing-card landing-card-alt" onClick={() => setView('login')}>
             <Lock size={30} />
@@ -1554,7 +1785,7 @@ export default function App() {
         <section className="hero">
           <div className="hero-badge">🎪 Turnamen 1 Lawan 1</div>
           <h2>LRP Bracket 2026</h2>
-          <p>{data.rooms.length > 0 ? `${data.rooms.length} ruangan aktif` : 'Belum ada ruangan dibuat'} &middot; 4 sesi &middot; setiap ruangan menghasilkan 1 juara ke babak lanjutan</p>
+          <p>{data.rooms.length > 0 ? `${data.rooms.length} dari 10 ruangan dibuat` : 'Belum ada ruangan dibuat'} &middot; 4 sesi &middot; setiap ruangan (64 peserta) menghasilkan 1 pemenang ke semifinal</p>
         </section>
 
         {isAdmin && (
@@ -1580,7 +1811,7 @@ export default function App() {
                 <span className="session-card-label">Sesi</span>
                 <span className="session-card-number">{s}</span>
                 <span className="session-card-sub">
-                  {roomsInSession.length > 0 ? `${roomsInSession.length} ruangan · ${doneInSession}/${roomsInSession.length} juara` : 'Belum ada ruangan'}
+                  {`${roomsInSession.length}/${ROOMS_PER_SESSION[s]} ruangan · ${doneInSession}/${ROOMS_PER_SESSION[s]} pemenang`}
                 </span>
               </button>
             );
@@ -1589,8 +1820,8 @@ export default function App() {
 
         <section className="final-teaser" onClick={() => setView('final')}>
           <div className="final-teaser-text">
-            <h3><Trophy size={18} /> Babak Lanjutan</h3>
-            <p>{doneRooms}/{data.rooms.length} ruangan sudah punya juara{champion ? ` · Juara Umum: ${champion}` : ''}</p>
+            <h3><Trophy size={18} /> Semifinal &amp; Final</h3>
+            <p>{doneRooms}/{TOTAL_QUALIFIERS} semifinalis lolos dari penyisihan{champion ? ` · Juara 1: ${champion}` : ''}</p>
           </div>
           <ChevronLeft size={18} className="rotate-180" />
         </section>
@@ -1606,11 +1837,11 @@ export default function App() {
         <section className="hero">
           <div className="hero-badge">Sesi {activeSession}</div>
           <h2>Ruangan Sesi {activeSession}</h2>
-          <p>{roomsInSession.length > 0 ? `${roomsInSession.length} ruangan berlangsung di sesi ini` : 'Belum ada ruangan di sesi ini'}</p>
+          <p>{`${roomsInSession.length}/${ROOMS_PER_SESSION[activeSession]} ruangan · ${ROOMS_PER_SESSION[activeSession]} pemenang lolos ke semifinal`}</p>
         </section>
         {isAdmin && (
           <div className="toolbar">
-            <button type="button" className="btn btn-gold" onClick={() => handleAddRoom(activeSession)}><Plus size={15} /> Tambah Ruangan</button>
+            <button type="button" className="btn btn-gold" disabled={roomsInSession.length >= ROOMS_PER_SESSION[activeSession]} onClick={() => handleAddRoom(activeSession)}><Plus size={15} /> Tambah Ruangan ({roomsInSession.length}/{ROOMS_PER_SESSION[activeSession]})</button>
           </div>
         )}
         {roomsInSession.length === 0 ? (
@@ -1650,7 +1881,7 @@ export default function App() {
           {isAdmin && (
             <div className="room-header-actions">
               <select value={activeRoom.session} onChange={e => updateSession(activeRoom.id, e.target.value)}>
-                {[1, 2, 3, 4].map(s => <option key={s} value={s}>Sesi {s}</option>)}
+                {[1, 2, 3, 4].map(s => <option key={s} value={s} disabled={s !== activeRoom.session && data.rooms.filter(r => r.session === s).length >= ROOMS_PER_SESSION[s]}>Sesi {s}</option>)}
               </select>
               <button type="button" className="btn btn-ghost sm" onClick={openManageParticipants}><Plus size={13} /> Kelola Peserta</button>
               <button type="button" className="btn btn-ghost sm" onClick={() => setBulkTarget(activeRoom.id)}><Upload size={13} /> Impor</button>
@@ -1748,60 +1979,155 @@ export default function App() {
   }
 
   function renderFinal() {
+    const finalRoundNums = Array.from({ length: FINAL_ROUNDS }, (_, i) => i + 1);
+    const nextSeries = Array.from({ length: SEMIFINAL_SERIES_COUNT }, (_, i) => i + 1).find(n => getSemifinalGames(finalMatches, n).length === 0);
     return (
       <div className="view">
-        <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Ruangan</button>
+        <button type="button" className="back-btn" onClick={() => setView('dashboard')}><ChevronLeft size={16} /> Semua Sesi</button>
 
         <div className="room-header">
           <div>
-            <h2>Babak Lanjutan</h2>
-            <p>Juara dari 10 ruangan bertemu di sini</p>
+            <h2>Semifinal &amp; Final</h2>
+            <p>10 pemenang penyisihan &rarr; Semifinal BO3 (pasangan diacak) &rarr; 5 finalis &rarr; Final liga home &amp; away</p>
           </div>
-          {isAdmin && (
-            <button type="button" className="btn btn-gold sm" onClick={() => setShowNewMatch(true)}><Plus size={14} /> Buat Pertandingan</button>
-          )}
         </div>
 
         {champion && (
-          <div className="champion-banner gold">🏆 Juara Umum: <strong>{champion}</strong></div>
+          <div className="champion-banner gold">🏆 Juara 1: <strong>{champion}</strong></div>
         )}
 
+        <h3 className="stage-title">Babak Penyisihan — {qualifiers.length}/{TOTAL_QUALIFIERS} pemenang</h3>
         <div className="qualifier-strip">
-          {data.rooms.map(room => {
-            const c = getRoomChampion(room);
-            return (
-              <div key={room.id} className={'qualifier-chip' + (c ? ' ready' : '')}>
-                <span className="qualifier-room">Sesi {room.session} · {room.name}</span>
-                <span className="qualifier-name">{c || 'Belum ada juara'}</span>
-              </div>
-            );
+          {[1, 2, 3, 4].map(sess => {
+            const rooms = data.rooms.filter(r => r.session === sess);
+            return Array.from({ length: ROOMS_PER_SESSION[sess] }, (_, i) => {
+              const room = rooms.find(r => r.roomNo === i + 1);
+              const c = room ? getRoomChampion(room) : null;
+              return (
+                <div key={`${sess}-${i}`} className={'qualifier-chip' + (c ? ' ready' : '')}>
+                  <span className="qualifier-room">Sesi {sess} · Ruangan {i + 1}</span>
+                  <span className="qualifier-name">{c || (room ? 'Belum ada pemenang' : 'Ruangan belum dibuat')}</span>
+                </div>
+              );
+            });
           })}
         </div>
 
-        {data.finalStage.matches.length === 0 ? (
+        <div className="stage-head">
+          <h3 className="stage-title">Babak Semifinal (BO3) — {semifinalWinners.length}/{SEMIFINAL_SERIES_COUNT} lolos</h3>
+          {isAdmin && nextSeries && (
+            <div className="stage-actions">
+              <button type="button" className="btn btn-gold sm" disabled={finalGames.length > 0 || semifinalPool.length < 2} onClick={requestShuffleSemifinal}><Shuffle size={14} /> Acak Pasangan</button>
+              <button type="button" className="btn btn-ghost sm" disabled={finalGames.length > 0} onClick={() => setShowNewMatch(true)}><Plus size={14} /> Pasangkan Manual</button>
+            </div>
+          )}
+        </div>
+        {finalGames.length > 0 && isAdmin && <p className="modal-hint">Semifinal dikunci karena jadwal Final sudah dibuat. Hapus jadwal Final untuk mengubah hasil semifinal.</p>}
+        {Array.from({ length: SEMIFINAL_SERIES_COUNT }, (_, i) => i + 1).every(n => getSemifinalGames(finalMatches, n).length === 0) ? (
           <div className="empty-state">
-            <p>Belum ada pertandingan di babak lanjutan.</p>
-            {isAdmin && <p>Tekan "Buat Pertandingan" setelah cukup ruangan punya juara.</p>}
+            <p>Belum ada pasangan semifinal.</p>
+            {isAdmin && <p>Tekan "Buat Pasangan Semifinal" setelah pemenang penyisihan tersedia.</p>}
           </div>
         ) : (
-          <div className="match-grid">
-            {data.finalStage.matches.map(m => (
-              <MatchTicket
-                key={m.id}
-                p1={m.p1}
-                p2={m.p2}
-                winner={m.winner}
-                readOnly={!isAdmin}
-                label={m.round}
-                photo={m.photo}
-                durationSeconds={m.durationSeconds}
-                violations={m.violations}
-                onDelete={isAdmin ? () => deleteFinalMatch(m.id) : undefined}
-                onPick={winnerName => pickFinalWinner(m.id, winnerName)}
-                onOpenDetail={isAdmin ? () => setDetailTarget({ scope: 'final', matchId: m.id }) : undefined}
-              />
-            ))}
+          <div className="series-list">
+            {Array.from({ length: SEMIFINAL_SERIES_COUNT }, (_, i) => i + 1).map(n => {
+              const st = getSeriesStatus(finalMatches, n);
+              if (!st.p1) return null;
+              return (
+                <div key={n} className={'series-card' + (st.winner ? ' done' : '')}>
+                  <div className="series-head">
+                    <strong>Semifinal {n}</strong>
+                    <span className="series-score">{st.w1} - {st.w2}</span>
+                    {st.winner && <span className="series-winner">Lolos: {st.winner}</span>}
+                    {isAdmin && finalGames.length === 0 && (
+                      <button type="button" className="ticket-del" onClick={() => requestDeleteSemifinalSeries(n)} aria-label="Hapus pasangan"><Trash2 size={13} /></button>
+                    )}
+                  </div>
+                  <div className="match-grid">
+                    {st.games.map(m => (
+                      <MatchTicket
+                        key={m.id}
+                        p1={m.p1}
+                        p2={m.p2}
+                        winner={m.winner}
+                        readOnly={!isAdmin || finalGames.length > 0}
+                        label={`Game ${m.game}${m.game === 3 ? ' (penentu)' : ''}`}
+                        photo={m.photo}
+                        durationSeconds={m.durationSeconds}
+                        violations={m.violations}
+                        onPick={winnerName => pickFinalWinner(m.id, winnerName)}
+                        onOpenDetail={isAdmin ? () => setDetailTarget({ scope: 'final', matchId: m.id }) : undefined}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
+        )}
+
+        <div className="stage-head">
+          <h3 className="stage-title">Babak Final — Liga Home &amp; Away, {FINALIST_COUNT} finalis</h3>
+          {isAdmin && finalGames.length === 0 && (
+            <button type="button" className="btn btn-gold sm" disabled={semifinalWinners.length !== FINALIST_COUNT} onClick={generateFinal}>Buat Jadwal Final</button>
+          )}
+          {isAdmin && finalGames.length > 0 && (
+            <button type="button" className="btn btn-ghost sm btn-danger" onClick={requestDeleteFinalSchedule}><Trash2 size={13} /> Hapus Jadwal Final</button>
+          )}
+        </div>
+        {finalGames.length === 0 ? (
+          <div className="empty-state">
+            <p>Jadwal final belum dibuat.</p>
+            <p>{FINALIST_COUNT} finalis bermain sistem liga home &amp; away: tiap pasangan bertemu 2 kali (home lalu away), jadi tiap finalis main {FINALIST_COUNT - 1} kali per leg dan {(FINALIST_COUNT - 1) * FINAL_ROUNDS} kali total.</p>
+          </div>
+        ) : (
+          <>
+            <table className="standings">
+              <thead>
+                <tr><th>#</th><th>Finalis</th><th>Poin</th><th>M</th><th>K</th><th>Selesai</th><th>Total Waktu</th><th>Peringkat</th></tr>
+              </thead>
+              <tbody>
+                {finalStandings.map((row, i) => (
+                  <tr key={row.name} className={finalComplete && i === 0 ? 'top' : ''}>
+                    <td>{i + 1}</td>
+                    <td>{row.name}</td>
+                    <td><strong>{row.points}</strong></td>
+                    <td>{row.wins}</td>
+                    <td>{row.losses}</td>
+                    <td>{row.decided}/{row.total}</td>
+                    <td>{row.totalSeconds != null ? formatDuration(row.totalSeconds) : '–'}</td>
+                    <td>{finalComplete ? FINAL_PLACES[i] : '…'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="modal-hint">Poin per kemenangan: 4 pion berjejer +4, 3 pion terbanyak +3, 3 pion tercepat/pertama +2, 2 pion terbanyak +1, kalah 0. Poin terbanyak juara; jika sama, jumlah menang lebih banyak, lalu total durasi tercepat. Urutan: Juara 1, 2, 3, Harapan 1, Harapan 2.</p>
+            {finalRoundNums.map(rn => (
+              <div key={rn}>
+                <h4 className="stage-subtitle">{rn === 1 ? 'Leg 1 — Home' : 'Leg 2 — Away (tuan rumah dibalik)'}</h4>
+                <div className="match-grid">
+                  {finalGames.filter(m => m.finalRound === rn).map(m => (
+                    <MatchTicket
+                      key={m.id}
+                      p1={m.p1}
+                      p2={m.p2}
+                      winner={m.winner}
+                      readOnly={!isAdmin}
+                      label={`Game ${m.game} · Home: ${m.p1}`}
+                      scoring
+                      winType={m.winType}
+                      onPickWinType={key => pickWinType(m.id, key)}
+                      photo={m.photo}
+                      durationSeconds={m.durationSeconds}
+                      violations={m.violations}
+                      onPick={winnerName => pickFinalWinner(m.id, winnerName)}
+                      onOpenDetail={isAdmin ? () => setDetailTarget({ scope: 'final', matchId: m.id }) : undefined}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </>
         )}
       </div>
     );
@@ -1931,28 +2257,21 @@ export default function App() {
       )}
 
       {showNewMatch && (
-        <Modal title="Buat Pertandingan Baru" onClose={() => { setShowNewMatch(false); setNewP1(''); setNewP2(''); setNewRound('Semifinal'); }}>
-          <label className="field-label">Nama Babak</label>
-          <div className="round-quick">
-            {['Semifinal', 'Final'].map(r => (
-              <button key={r} type="button" className={'chip-btn' + (newRound === r ? ' active' : '')} onClick={() => setNewRound(r)}>{r}</button>
-            ))}
-          </div>
-          <input className="text-input" value={newRound} onChange={e => setNewRound(e.target.value)} placeholder="Nama babak" />
-
+        <Modal title="Buat Pasangan Semifinal (BO3)" onClose={() => { setShowNewMatch(false); setNewP1(''); setNewP2(''); }}>
+          <p className="modal-hint">Dua peserta bertanding 2 kali; jika masing-masing menang sekali, Game 3 otomatis muncul sebagai penentu.</p>
           <label className="field-label">Peserta 1</label>
           <select className="text-input" value={newP1} onChange={e => setNewP1(e.target.value)}>
             <option value="">Pilih peserta…</option>
-            {finalPool.map(name => <option key={name} value={name} disabled={name === newP2}>{name}</option>)}
+            {semifinalPool.map(name => <option key={name} value={name} disabled={name === newP2}>{name}</option>)}
           </select>
 
           <label className="field-label">Peserta 2</label>
           <select className="text-input" value={newP2} onChange={e => setNewP2(e.target.value)}>
             <option value="">Pilih peserta…</option>
-            {finalPool.map(name => <option key={name} value={name} disabled={name === newP1}>{name}</option>)}
+            {semifinalPool.map(name => <option key={name} value={name} disabled={name === newP1}>{name}</option>)}
           </select>
 
-          <button type="button" className="btn btn-gold full" disabled={!newP1 || !newP2 || newP1 === newP2} onClick={createFinalMatch}>Buat Pertandingan</button>
+          <button type="button" className="btn btn-gold full" disabled={!newP1 || !newP2 || newP1 === newP2} onClick={createSemifinalSeries}>Buat Pasangan</button>
         </Modal>
       )}
 
