@@ -9,6 +9,13 @@ const TOTAL_QUALIFIERS = 10;
 const SEMIFINAL_SERIES_COUNT = 5;
 const FINALIST_COUNT = 5;
 const FINAL_ROUNDS = 2;
+// Poin Babak Final (liga home-away). Poin dihitung otomatis dari jenis kemenangan yang dipilih admin; yang kalah selalu 0.
+const WIN_TYPES = [
+  { key: '4row', label: '4 pion berjejer', points: 4 },
+  { key: '3most', label: '3 pion berjejer terbanyak', points: 3 },
+  { key: '3first', label: '3 pion berjajar tercepat/pertama', points: 2 },
+  { key: '2most', label: '2 pion berjajar terbanyak', points: 1 },
+];
 const FINAL_PLACES = ['Juara 1', 'Juara 2', 'Juara 3', 'Harapan 1', 'Harapan 2'];
 const ROUND_NAMES = ['Babak 64 Besar', 'Babak 32 Besar', 'Babak 16 Besar', 'Perempat Final', 'Semifinal Ruangan', 'Final Ruangan'];
 const ADMIN_PIN = 'lrp2026';
@@ -214,7 +221,7 @@ function simulateRoom(room) {
 }
 
 function makeFinalMatch(fields) {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, round: '', stage: 'semifinal', series: null, game: null, finalRound: null, p1: null, p2: null, winner: null, photo: null, durationSeconds: null, violations: '', pengawasName: '', ...fields };
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, round: '', stage: 'semifinal', series: null, game: null, finalRound: null, p1: null, p2: null, winner: null, winType: null, photo: null, durationSeconds: null, violations: '', pengawasName: '', ...fields };
 }
 
 function getSemifinalGames(matches, series) {
@@ -258,7 +265,8 @@ function getFinalMatches(matches) {
   return matches.filter(m => m.stage === 'final');
 }
 
-// Each finalist meets every other finalist once per round (5 finalists => 4 games each per round, 10 games per round).
+// Liga home-away: leg 1 tiap pasangan bertemu sekali (p1 = tuan rumah), leg 2 mengulang dengan tuan rumah dibalik.
+// 5 finalis => 4 pertandingan per leg, 8 total per finalis, 20 pertandingan seluruhnya.
 function buildFinalSchedule(finalists) {
   const order = finalists.slice();
   if (order.length % 2 === 1) order.push(null);
@@ -275,23 +283,42 @@ function buildFinalSchedule(finalists) {
   const matches = [];
   for (let round = 1; round <= FINAL_ROUNDS; round++) {
     pairs.forEach(([a, b], idx) => {
-      matches.push(makeFinalMatch({ stage: 'final', finalRound: round, game: idx + 1, round: `Final · Ronde ${round} · Game ${idx + 1}`, p1: a, p2: b }));
+      const home = round === 1 ? a : b;
+      const away = round === 1 ? b : a;
+      matches.push(makeFinalMatch({ stage: 'final', finalRound: round, game: idx + 1, round: `Final · ${round === 1 ? 'Home' : 'Away'} · Game ${idx + 1}`, p1: home, p2: away }));
     });
   }
   return matches;
+}
+
+function getWinType(key) {
+  return WIN_TYPES.find(t => t.key === key) || null;
+}
+
+// Pertandingan final dianggap selesai hanya jika pemenang DAN jenis kemenangan sudah diisi.
+function isFinalGameDone(m) {
+  return !!(m.winner && getWinType(m.winType));
+}
+
+function getFinalGamePoints(m, name) {
+  if (!isFinalGameDone(m) || m.winner !== name) return 0;
+  return getWinType(m.winType).points;
 }
 
 function computeFinalStandings(matches, finalists) {
   const finals = getFinalMatches(matches);
   const rows = finalists.map(name => {
     const played = finals.filter(m => m.p1 === name || m.p2 === name);
-    const wins = played.filter(m => m.winner === name).length;
-    const timed = played.filter(m => m.durationSeconds != null);
+    const done = played.filter(isFinalGameDone);
+    const wins = done.filter(m => m.winner === name).length;
+    const points = done.reduce((sum, m) => sum + getFinalGamePoints(m, name), 0);
+    const timed = done.filter(m => m.durationSeconds != null);
     const totalSeconds = timed.length ? timed.reduce((sum, m) => sum + m.durationSeconds, 0) : null;
-    return { name, wins, totalSeconds, played: played.length, decided: played.filter(m => m.winner).length };
+    return { name, points, wins, losses: done.length - wins, totalSeconds, total: played.length, decided: done.length };
   });
   const timeKey = r => (r.totalSeconds == null ? Number.MAX_SAFE_INTEGER : r.totalSeconds);
-  rows.sort((a, b) => b.wins - a.wins || timeKey(a) - timeKey(b));
+  // Urutan: poin terbanyak, lalu jumlah menang, lalu total durasi tercepat.
+  rows.sort((a, b) => b.points - a.points || b.wins - a.wins || timeKey(a) - timeKey(b));
   return rows;
 }
 
@@ -347,7 +374,7 @@ function groupRowsByRoom(rawRows) {
   return groups;
 }
 
-function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations }) {
+function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpenDetail, photo, durationSeconds, violations, winType, onPickWinType, scoring }) {
   const playable = !!(p1 && p2) && !readOnly;
   const hasExtra = !!(photo || violations);
   return (
@@ -389,6 +416,24 @@ function MatchTicket({ p1, p2, winner, onPick, readOnly, label, onDelete, onOpen
           {p2 || 'Menunggu…'}
         </button>
       </div>
+      {scoring && winner && (
+        <div className="win-types">
+          <div className="win-types-head">Poin {winner}: <strong>{getWinType(winType) ? `+${getWinType(winType).points}` : 'belum dipilih'}</strong></div>
+          {WIN_TYPES.map(t => (
+            <button
+              key={t.key}
+              type="button"
+              disabled={readOnly}
+              className={'win-type-btn' + (winType === t.key ? ' active' : '')}
+              onClick={() => onPickWinType(winType === t.key ? null : t.key)}
+            >
+              <span>{t.label}</span><b>+{t.points}</b>
+            </button>
+          ))}
+        </div>
+      )}
+      {scoring && p1 && p2 && !winner && <div className="win-types-hint">Pilih pemenang dulu</div>}
+      {scoring && winner && !getWinType(winType) && <div className="win-types-warn">⚠ Pilih jenis kemenangan agar poin terhitung</div>}
       {durationSeconds != null && <div className="ticket-duration">⏱ {formatDuration(durationSeconds)}</div>}
     </div>
   );
@@ -974,6 +1019,14 @@ function GlobalStyle() {
       .qualifier-chip.ready .qualifier-name { color: #A6790E; }
       .stage-title { font-family: 'Bungee', cursive; font-weight: 400; font-size: 15px; color: #A6790E; margin: 10px 0 0; }
       .stage-subtitle { font-size: 13px; margin: 14px 0 8px; color: #2B2013; }
+      .stage-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .win-types { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+      .win-types-head { font-size: 11px; color: #8D8371; }
+      .win-type-btn { display: flex; justify-content: space-between; align-items: center; font-family: inherit; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid #E9DCC0; background: #FFFFFF; color: #2B2013; cursor: pointer; }
+      .win-type-btn:disabled { cursor: default; opacity: 0.7; }
+      .win-type-btn.active { border-color: #C28E12; background: rgba(194,142,18,0.16); font-weight: 700; color: #A6790E; }
+      .win-types-hint { margin-top: 6px; font-size: 11px; color: #8D8371; text-align: center; }
+      .win-types-warn { margin-top: 6px; font-size: 11px; color: #D6455C; text-align: center; font-weight: 600; }
       .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
       .series-list { display: flex; flex-direction: column; gap: 14px; }
       .series-card { background: #FFFFFF; border: 1px solid #E9DCC0; border-radius: 14px; padding: 12px; }
@@ -1198,7 +1251,7 @@ export default function App() {
   const semifinalWinners = getSemifinalWinners(finalMatches);
   const finalGames = getFinalMatches(finalMatches);
   const finalStandings = finalGames.length > 0 ? computeFinalStandings(finalMatches, Array.from(new Set(finalGames.flatMap(m => [m.p1, m.p2])))) : [];
-  const finalComplete = finalGames.length > 0 && finalGames.every(m => m.winner);
+  const finalComplete = finalGames.length > 0 && finalGames.every(isFinalGameDone);
   const champion = finalComplete && finalStandings[0] ? finalStandings[0].name : null;
 
   function openRoom(room) {
@@ -1472,9 +1525,45 @@ export default function App() {
     const next = clone(data);
     const match = next.finalStage.matches.find(m => m.id === matchId);
     if (!match) return;
+    if (match.winner !== winnerName) match.winType = null; // ganti pemenang => jenis kemenangan harus dipilih ulang
     match.winner = winnerName;
     if (match.stage === 'semifinal') syncSemifinalSeries(next.finalStage, match.series);
     persist(next);
+  }
+
+  function pickWinType(matchId, winType) {
+    if (!isAdmin) return;
+    const next = clone(data);
+    const match = next.finalStage.matches.find(m => m.id === matchId);
+    if (!match || !match.winner || match.stage !== 'final') return;
+    match.winType = winType;
+    persist(next);
+  }
+
+  // Acak pasangan semifinal dari pemenang penyisihan yang belum dipasangkan.
+  function shuffleSemifinalPairs() {
+    const pool = semifinalPool.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const next = clone(data);
+    for (let i = 0; i + 1 < pool.length; i += 2) {
+      let series = 1;
+      while (getSemifinalGames(next.finalStage.matches, series).length > 0) series++;
+      if (series > SEMIFINAL_SERIES_COUNT) break;
+      [1, 2].forEach(game => {
+        next.finalStage.matches.push(makeFinalMatch({ stage: 'semifinal', series, game, round: `Semifinal ${series} · Game ${game}`, p1: pool[i], p2: pool[i + 1] }));
+      });
+    }
+    persist(next);
+  }
+
+  function requestShuffleSemifinal() {
+    setConfirmState({
+      message: `${semifinalPool.length} pemenang yang belum berpasangan akan diacak menjadi pasangan semifinal secara acak. Pasangan yang sudah ada tidak berubah. Lanjutkan?`,
+      onConfirm: () => { shuffleSemifinalPairs(); setConfirmState(null); },
+    });
   }
 
   function requestDeleteSemifinalSeries(series) {
@@ -1537,6 +1626,7 @@ export default function App() {
           const m = next.finalStage.matches.find(mm => mm.id === finalMatchId);
           if (m) {
             m.winner = null;
+            m.winType = null;
             if (m.stage === 'semifinal') syncSemifinalSeries(next.finalStage, m.series);
           }
         }
@@ -1898,7 +1988,7 @@ export default function App() {
         <div className="room-header">
           <div>
             <h2>Semifinal &amp; Final</h2>
-            <p>10 pemenang penyisihan &rarr; Semifinal BO3 (5 pasangan) &rarr; 5 finalis &rarr; Final 8 pertandingan per finalis</p>
+            <p>10 pemenang penyisihan &rarr; Semifinal BO3 (pasangan diacak) &rarr; 5 finalis &rarr; Final liga home &amp; away</p>
           </div>
         </div>
 
@@ -1926,7 +2016,10 @@ export default function App() {
         <div className="stage-head">
           <h3 className="stage-title">Babak Semifinal (BO3) — {semifinalWinners.length}/{SEMIFINAL_SERIES_COUNT} lolos</h3>
           {isAdmin && nextSeries && (
-            <button type="button" className="btn btn-gold sm" disabled={finalGames.length > 0} onClick={() => setShowNewMatch(true)}><Plus size={14} /> Buat Pasangan Semifinal</button>
+            <div className="stage-actions">
+              <button type="button" className="btn btn-gold sm" disabled={finalGames.length > 0 || semifinalPool.length < 2} onClick={requestShuffleSemifinal}><Shuffle size={14} /> Acak Pasangan</button>
+              <button type="button" className="btn btn-ghost sm" disabled={finalGames.length > 0} onClick={() => setShowNewMatch(true)}><Plus size={14} /> Pasangkan Manual</button>
+            </div>
           )}
         </div>
         {finalGames.length > 0 && isAdmin && <p className="modal-hint">Semifinal dikunci karena jadwal Final sudah dibuat. Hapus jadwal Final untuk mengubah hasil semifinal.</p>}
@@ -1974,7 +2067,7 @@ export default function App() {
         )}
 
         <div className="stage-head">
-          <h3 className="stage-title">Babak Final — {FINALIST_COUNT} finalis, {FINAL_ROUNDS} ronde</h3>
+          <h3 className="stage-title">Babak Final — Liga Home &amp; Away, {FINALIST_COUNT} finalis</h3>
           {isAdmin && finalGames.length === 0 && (
             <button type="button" className="btn btn-gold sm" disabled={semifinalWinners.length !== FINALIST_COUNT} onClick={generateFinal}>Buat Jadwal Final</button>
           )}
@@ -1985,31 +2078,33 @@ export default function App() {
         {finalGames.length === 0 ? (
           <div className="empty-state">
             <p>Jadwal final belum dibuat.</p>
-            <p>Final dimainkan {FINALIST_COUNT} finalis yang lolos semifinal; tiap finalis bertemu semua finalis lain di setiap ronde ({FINALIST_COUNT - 1} pertandingan/ronde, total {(FINALIST_COUNT - 1) * FINAL_ROUNDS} pertandingan per finalis).</p>
+            <p>{FINALIST_COUNT} finalis bermain sistem liga home &amp; away: tiap pasangan bertemu 2 kali (home lalu away), jadi tiap finalis main {FINALIST_COUNT - 1} kali per leg dan {(FINALIST_COUNT - 1) * FINAL_ROUNDS} kali total.</p>
           </div>
         ) : (
           <>
             <table className="standings">
               <thead>
-                <tr><th>#</th><th>Finalis</th><th>Menang</th><th>Dimainkan</th><th>Total Waktu</th><th>Peringkat</th></tr>
+                <tr><th>#</th><th>Finalis</th><th>Poin</th><th>M</th><th>K</th><th>Selesai</th><th>Total Waktu</th><th>Peringkat</th></tr>
               </thead>
               <tbody>
                 {finalStandings.map((row, i) => (
                   <tr key={row.name} className={finalComplete && i === 0 ? 'top' : ''}>
                     <td>{i + 1}</td>
                     <td>{row.name}</td>
+                    <td><strong>{row.points}</strong></td>
                     <td>{row.wins}</td>
-                    <td>{row.decided}/{(FINALIST_COUNT - 1) * FINAL_ROUNDS}</td>
+                    <td>{row.losses}</td>
+                    <td>{row.decided}/{row.total}</td>
                     <td>{row.totalSeconds != null ? formatDuration(row.totalSeconds) : '–'}</td>
                     <td>{finalComplete ? FINAL_PLACES[i] : '…'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <p className="modal-hint">Juara ditentukan dari total kemenangan; jika sama, finalis dengan total durasi pertandingan tercepat unggul. Urutan: Juara 1, 2, 3, Harapan 1, Harapan 2.</p>
+            <p className="modal-hint">Poin per kemenangan: 4 pion berjejer +4, 3 pion terbanyak +3, 3 pion tercepat/pertama +2, 2 pion terbanyak +1, kalah 0. Poin terbanyak juara; jika sama, jumlah menang lebih banyak, lalu total durasi tercepat. Urutan: Juara 1, 2, 3, Harapan 1, Harapan 2.</p>
             {finalRoundNums.map(rn => (
               <div key={rn}>
-                <h4 className="stage-subtitle">Ronde {rn}</h4>
+                <h4 className="stage-subtitle">{rn === 1 ? 'Leg 1 — Home' : 'Leg 2 — Away (tuan rumah dibalik)'}</h4>
                 <div className="match-grid">
                   {finalGames.filter(m => m.finalRound === rn).map(m => (
                     <MatchTicket
@@ -2018,7 +2113,10 @@ export default function App() {
                       p2={m.p2}
                       winner={m.winner}
                       readOnly={!isAdmin}
-                      label={`Game ${m.game}`}
+                      label={`Game ${m.game} · Home: ${m.p1}`}
+                      scoring
+                      winType={m.winType}
+                      onPickWinType={key => pickWinType(m.id, key)}
                       photo={m.photo}
                       durationSeconds={m.durationSeconds}
                       violations={m.violations}
